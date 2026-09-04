@@ -1,4 +1,4 @@
-name = "kuwagata-room-monitor"
+name = "kuwagata-room-monitor2"
 main = "worker.js"
 compatibility_date = "2024-09-01"
 
