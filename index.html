@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <!-- ピンチズーム（拡大縮小）を完全に許可 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, minimum-scale=0.5, maximum-scale=3.0, user-scalable=yes">
+  <title>クワガタ飼育室 環境監視システム</title>
+  <!-- Chart.js (軽量高性能グラフライブラリ) -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- キャッシュ強制クリアのためのバージョンクエリ付与 -->
+  <link rel="stylesheet" href="style.css?v=1.6">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220%22%20%22100%22%20100%22><text y=%22.9em%22 font-size=%2290%22>🪲</text></svg>">
+</head>
+<body class="mode-auto">
+
+  <!-- 🔒 合言葉ログインゲート (未認証時に表示) -->
+  <div id="authModal" class="auth-backdrop">
+    <div class="auth-card">
+      <div class="auth-icon">🪲</div>
+      <h2>クワガタ飼育室 環境監視</h2>
+      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v2.6 Security Gate</div>
+      <p class="auth-desc">セキュリティ保護されています。<br>合言葉（パスコード）を入力してください。</p>
+      
+      <form id="authForm">
+        <div class="form-group" style="margin-bottom: 12px;">
+          <input type="password" id="authPassInput" class="form-input auth-input" placeholder="合言葉 (例: 7777 / lojing2026)" autocomplete="current-password" autofocus required>
+        </div>
+        <div id="authErrorMsg" class="auth-error-msg hidden">合言葉が正しくありません</div>
+        <button type="submit" id="authSubmitBtn" class="btn btn-primary btn-large" style="width: 100%;">🔓 解除して入場</button>
+      </form>
+
+      <!-- 🔑 有効な合言葉ヒント案内 -->
+      <div class="auth-hint-box" style="margin-top: 14px; font-size: 0.8rem; background: rgba(56, 189, 248, 0.08); border: 1px dashed rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 10px; color: var(--text-muted); line-height: 1.5;">
+        <span>🔑 <strong>設定済み合言葉:</strong></span>
+        <div style="margin-top: 4px; display: flex; justify-content: center; gap: 8px;">
+          <code style="background: rgba(15, 23, 42, 0.8); color: #38bdf8; padding: 2px 6px; border-radius: 4px; cursor: pointer;" title="クリックで自動入力" id="hintCode1">7777</code>
+          <code style="background: rgba(15, 23, 42, 0.8); color: #38bdf8; padding: 2px 6px; border-radius: 4px; cursor: pointer;" title="クリックで自動入力" id="hintCode2">lojing2026</code>
+        </div>
+      </div>
+
+      <!-- 🛠️ localhost開発環境専用 ワンクリック解除エリア -->
+      <div id="localhostAuthBox" class="localhost-auth-box hidden" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-color);">
+        <button type="button" id="localhostUnlockBtn" class="btn btn-cool btn-large" style="width: 100%; font-size: 0.85rem; padding: 10px;">
+          🛠️ Localhost開発環境: ワンクリック入場
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main App (認証成功後に表示) -->
+  <div class="app-wrapper hidden" id="appWrapper">
+    <!-- Header -->
+    <header>
+      <div class="brand">
+        <span class="brand-icon">🪲</span>
+        <div>
+          <h1>クワガタ飼育室 環境監視</h1>
+          <div class="app-sub-title">Kuwagata Room Monitor v2.6</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <!-- 画面向き固定・自動切替トグルボタン -->
+        <button id="orientationBtn" class="btn btn-mode" title="画面モード切替">
+          <span id="orientationIcon">🔄</span>
+          <span id="orientationLabel">自動</span>
+        </button>
+
+        <div id="connectionStatus" class="status-badge">
+          <span class="pulse-dot"></span>
+          <span id="statusText">接続待機中</span>
+        </div>
+        <button id="refreshBtn" class="btn btn-icon-only" title="最新データに更新">🔄</button>
+        <button id="settingsBtn" class="btn btn-icon-only" title="API・設定">⚙️</button>
+        <button id="logoutBtn" class="btn btn-icon-only" title="ログアウト">🔒</button>
+      </div>
+    </header>
+
+    <!-- Alert Banner (異常時に表示) -->
+    <div id="alertBanner" class="alert-banner hidden">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span style="font-size: 1.2rem;">⚠️</span>
+        <span id="alertMessage">警告メッセージ</span>
+      </div>
+      <button id="dismissAlertBtn" class="btn" style="padding: 2px 8px; font-size: 0.8rem;">閉じる</button>
+    </div>
+
+    <!-- Main Content Area -->
+    <main class="main-layout">
+      <!-- 1. 温湿度計モニターセクション (4台) -->
+      <section class="section-thermometers">
+        <div class="section-title">
+          <span>🌡️ 飼育室 温度・湿度監視 (4箇所)</span>
+          <span id="lastUpdated" class="last-updated-text">最終更新: --:--:--</span>
+        </div>
+        <div class="thermometer-grid" id="thermometerGrid">
+          <div class="sensor-card empty-guide">
+            設定からSwitchBotのTokenとSecretを入力して「デバイス読込」を行ってください
+          </div>
+        </div>
+      </section>
+
+      <!-- 📈 温度推移グラフセクション (4箇所同時重ね合わせ比較) -->
+      <section class="section-graph" style="margin-bottom: 24px;">
+        <div class="section-title">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span>📈 飼育室 温度推移グラフ (4箇所同時比較)</span>
+            <span style="font-size: 0.72rem; background: rgba(16, 185, 129, 0.12); color: var(--accent-green); padding: 2px 6px; border-radius: 4px; font-weight: 600;">適温 15-18℃</span>
+          </div>
+          <!-- 期間切り替えボタン -->
+          <div class="graph-period-buttons" style="display: flex; gap: 4px;">
+            <button type="button" class="btn btn-period active" data-hours="1" style="padding: 2px 8px; font-size: 0.75rem;">1時間</button>
+            <button type="button" class="btn btn-period" data-hours="6" style="padding: 2px 8px; font-size: 0.75rem;">6時間</button>
+            <button type="button" class="btn btn-period" data-hours="24" style="padding: 2px 8px; font-size: 0.75rem;">24時間</button>
+            <button type="button" class="btn btn-period" data-hours="0" style="padding: 2px 8px; font-size: 0.75rem;">すべて</button>
+          </div>
+        </div>
+        <div class="graph-card" style="position: relative; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 14px; padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.25);">
+          <!-- グラフ描画キャンバス領域 -->
+          <div style="position: relative; width: 100%; height: 260px;">
+            <canvas id="tempChartCanvas"></canvas>
+
+            <!-- 💬 エアコン送信イベント詳細ツールチップ (クリック/タップ時に動的表示) -->
+            <div id="airconEventTooltip" class="aircon-tooltip hidden">
+              <div class="aircon-tooltip-header">
+                <span class="aircon-tooltip-badge" id="ttBadge">❄️ エアコン送信詳細</span>
+                <button type="button" id="closeAirconTooltipBtn" class="aircon-tooltip-close">✕</button>
+              </div>
+              <div class="aircon-tooltip-body">
+                <div class="tooltip-item">
+                  <span class="tooltip-label">📅 送信日時:</span>
+                  <span class="tooltip-value" id="ttTime">--:--:--</span>
+                </div>
+                <div class="tooltip-item">
+                  <span class="tooltip-label">⚡ 送信種別:</span>
+                  <span class="tooltip-value" id="ttType">手動送信</span>
+                </div>
+                <div class="tooltip-item">
+                  <span class="tooltip-label">❄️ 設定温度:</span>
+                  <span class="tooltip-value highlight" id="ttTemp">16 ℃</span>
+                </div>
+                <div class="tooltip-item">
+                  <span class="tooltip-label">📋 操作概要:</span>
+                  <span class="tooltip-value" id="ttDesc">--</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 🏷️ 直近のエアコン送信履歴クイックチップ一覧 -->
+          <div id="airconHistoryChipsContainer" style="margin-top: 10px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 0.75rem;">
+            <span style="color: var(--text-muted); font-weight: 600;">📡 送信履歴:</span>
+            <div id="airconEventChips" style="display: flex; gap: 6px; flex-wrap: wrap; align-items: center;">
+              <span style="color: var(--text-muted); font-size: 0.72rem;">まだ送信履歴がありません（操作するとピンと詳細が表示されます）</span>
+            </div>
+          </div>
+
+          <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.75rem; color: var(--text-muted); margin-top: 8px; border-top: 1px solid var(--border-color); padding-top: 8px; flex-wrap: wrap; gap: 6px;">
+            <span>💡 グラフのピンまたは履歴タグをクリックすると送信内容の詳細を表示します</span>
+            <button type="button" id="clearHistoryBtn" class="btn" style="padding: 1px 6px; font-size: 0.7rem;">履歴クリア</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. コントロールセクション（エアコン・キープアライブ・シャッター） -->
+      <section class="section-controls">
+        <div class="section-title">
+          <span>⚡ エアコン操作 & シャッター</span>
+        </div>
+        <div class="controls-grid">
+          <!-- エアコン操作カード (設定可視化・カスタマイズUI) -->
+          <div class="control-card aircon-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <h3>❄️ エアコン制御 (設定可視化)</h3>
+              <span id="airconCurrentBadge" style="font-size: 0.75rem; background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); padding: 2px 8px; border-radius: 4px; font-weight: 700;">設定: 冷房 16℃</span>
+            </div>
+            <p class="card-desc">送信するパラメータを事前に確認・変更してから赤外線を出力します。</p>
+
+            <!-- パラメータ設定フォーム -->
+            <div class="aircon-param-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; background: var(--bg-primary); padding: 12px; border-radius: 8px; margin-bottom: 12px; border: 1px solid var(--border-color);">
+              <div>
+                <label style="display: block; font-size: 0.72rem; color: var(--text-muted); margin-bottom: 2px;">設定温度</label>
+                <div style="display: flex; align-items: center; gap: 4px;">
+                  <button type="button" id="tempDownBtn" class="btn" style="padding: 4px 8px; font-size: 0.9rem;">-</button>
+                  <input type="number" id="airconTempInput" class="form-input" value="16" min="16" max="30" style="text-align: center; font-weight: 700; padding: 4px; font-size: 1rem; width: 50px;">
+                  <span style="font-size: 0.85rem;">℃</span>
+                  <button type="button" id="tempUpBtn" class="btn" style="padding: 4px 8px; font-size: 0.9rem;">+</button>
+                </div>
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 0.72rem; color: var(--text-muted); margin-bottom: 2px;">運転モード</label>
+                <select id="airconModeSelect" class="form-input" style="padding: 6px 8px; font-size: 0.85rem;">
+                  <option value="2" selected>冷房</option>
+                  <option value="3">除湿</option>
+                  <option value="4">送風</option>
+                  <option value="1">自動</option>
+                  <option value="5">暖房</option>
+                </select>
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 0.72rem; color: var(--text-muted); margin-bottom: 2px;">風量</label>
+                <select id="airconFanSelect" class="form-input" style="padding: 6px 8px; font-size: 0.85rem;">
+                  <option value="1" selected>自動</option>
+                  <option value="2">弱</option>
+                  <option value="3">中</option>
+                  <option value="4">強</option>
+                </select>
+              </div>
+
+              <div>
+                <label style="display: block; font-size: 0.72rem; color: var(--text-muted); margin-bottom: 2px;">風向</label>
+                <select id="airconDirSelect" class="form-input" style="padding: 6px 8px; font-size: 0.85rem;">
+                  <option value="1" selected>風向 1</option>
+                  <option value="2">風向 2</option>
+                  <option value="3">風向 3</option>
+                  <option value="auto">自動/スイング</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- アクションボタン -->
+            <div class="button-group aircon-buttons" style="display: flex; gap: 8px;">
+              <button id="btnSendCustomAircon" class="btn btn-cool btn-large" style="flex: 2; font-weight: 700;">
+                ❄️ <span id="sendAirconBtnLabel">冷房 16℃ (自動) を送信</span>
+              </button>
+              <button id="btnAirconOff" class="btn btn-danger btn-large" style="flex: 1;">
+                ⏹️ 停止
+              </button>
+            </div>
+            <div id="airconStatus" class="status-msg"></div>
+          </div>
+
+          <!-- 1時間おきキープアライブ設定 (初期完全OFF安全ガード) -->
+          <div class="control-card keepalive-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <h3>⏱️ 1時間おき再送信 (キープアライブ)</h3>
+              <span id="keepAliveBadge" style="font-size: 0.72rem; background: rgba(239, 68, 68, 0.15); color: var(--accent-red); padding: 2px 6px; border-radius: 4px; font-weight: 700;">安全停止中</span>
+            </div>
+            <p class="card-desc">停電復旧の保険用。現在設定されている温度・モードの信号を1時間ごとに送信します。</p>
+            <div class="toggle-row">
+              <span style="font-weight: 600; font-size: 0.9rem;">1時間おき自動再送信</span>
+              <label class="switch-label">
+                <input type="checkbox" id="keepAliveToggle">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div id="keepAliveInfo" class="keepalive-status" style="color: var(--text-muted);">
+              状態: <strong style="color: var(--accent-red);">安全のため完全停止中 (夜間・テスト中の自動送信なし)</strong>
+            </div>
+          </div>
+
+          <!-- シャッター操作カード (ボット2台) -->
+          <div class="control-card shutter-card">
+            <h3>🚪 シャッター開閉 (ボット)</h3>
+            <p class="card-desc">シャッターのボットスイッチを押下操作します。</p>
+            <div class="button-group shutter-buttons">
+              <button id="btnShutterOpen" class="btn btn-primary btn-large">▲ シャッターを開ける</button>
+              <button id="btnShutterClose" class="btn btn-large">▼ シャッターを閉める</button>
+            </div>
+            <div id="shutterStatus" class="status-msg"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. カメラ確認セクション (実機API自動連携) -->
+      <section class="section-cameras">
+        <div class="section-title">
+          <span>📹 監視カメラ状況 (実機API連携)</span>
+          <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: normal;">※ 映像ストリームはSwitchBotのP2P暗号化仕様のため公式アプリ連携で確認します</span>
+        </div>
+        <div class="camera-grid" id="cameraGrid">
+          <!-- JSで検出されたカメラ実機（全体カメラ、エアコン確認用等）が動的描画されます -->
+          <div class="camera-card" style="text-align: center; color: var(--text-muted); padding: 20px;">
+            カメラデバイスを検出中...
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 設定モーダル -->
+  <div id="settingsModal" class="modal-backdrop hidden">
+    <div class="modal-box">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 style="font-size: 1.15rem;">⚙️ システム設定</h2>
+        <button id="closeSettingsBtn" class="btn" style="padding: 4px 10px;">✕</button>
+      </div>
+
+      <div class="form-group">
+        <label>SwitchBot オープントークン (Token)</label>
+        <input type="password" id="sbTokenInput" class="form-input" placeholder="SwitchBotアプリで取得したToken">
+      </div>
+
+      <div class="form-group">
+        <label>SwitchBot クライアントシークレット (Secret)</label>
+        <input type="password" id="sbSecretInput" class="form-input" placeholder="SwitchBotアプリで取得したSecret">
+        <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 4px;">
+          ※ SwitchBotアプリ「プロフィール」→「設定」→「アプリバージョンを10回連打」→「開発者向けオプション」で取得できます。
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 8px; margin-bottom: 20px;">
+        <button id="btnFetchDevices" class="btn btn-primary" style="flex: 1;">🔍 デバイスを自動検出</button>
+        <button id="btnSaveApiKeys" class="btn" style="flex: 1;">💾 キーを保存</button>
+      </div>
+
+      <!-- 📈 グラフ目盛り設定セクション -->
+      <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+        <h4 style="font-size: 0.95rem; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between;">
+          <span>📈 温度グラフ目盛り（Y軸）設定</span>
+        </h4>
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 10px;">
+          飼育室の温度変化を細かく把握するために、グラフの上限・下限温度を調整できます。
+        </p>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; background: var(--bg-primary); padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+          <div>
+            <label style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">下限温度 (Min)</label>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <input type="number" id="chartMinTempInput" class="form-input" value="15" step="0.5" style="text-align: center; font-weight: 700;">
+              <span style="font-size: 0.85rem;">℃</span>
+            </div>
+          </div>
+          <div>
+            <label style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">上限温度 (Max)</label>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <input type="number" id="chartMaxTempInput" class="form-input" value="18" step="0.5" style="text-align: center; font-weight: 700;">
+              <span style="font-size: 0.85rem;">℃</span>
+            </div>
+          </div>
+        </div>
+        <div style="display: flex; justify-content: flex-end; margin-top: 8px;">
+          <button type="button" id="btnSaveChartScale" class="btn btn-primary" style="padding: 6px 12px; font-size: 0.8rem;">📈 目盛り設定を保存</button>
+        </div>
+      </div>
+
+      <div id="deviceListSection" style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+        <h4 style="font-size: 0.95rem; margin-bottom: 10px;">検出されたデバイス一覧</h4>
+        <div id="deviceListContainer" style="font-size: 0.85rem; color: var(--text-muted);">
+          まだ検出されていません。TokenとSecretを入力して「デバイスを自動検出」を押してください。
+        </div>
+      </div>
+
+      <!-- 📷 API対応カメラ情報セクション -->
+      <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+        <details style="font-size: 0.8rem; color: var(--text-muted); background: var(--bg-primary); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+          <summary style="cursor: pointer; font-weight: 600; color: var(--accent-blue);">
+            📷 API対応カメラ一覧（2026年9月現在Gemini調べ）
+          </summary>
+          <div style="margin-top: 8px; line-height: 1.6;">
+            SwitchBot Web API (v1.1) が公式サポートしているカメラは以下の6モデルです：
+            <ul style="padding-left: 18px; margin: 6px 0;">
+              <li>見守りカメラ (Indoor Cam)</li>
+              <li>見守りカメラ パンチルト (Pan/Tilt Cam)</li>
+              <li>見守りカメラ パンチルト 2K (Pan/Tilt Cam 2K)</li>
+              <li>見守りカメラ パンチルト Plus 2K (Pan/Tilt Cam Plus 2K)</li>
+              <li>見守りカメラ パンチルト Plus 3K (Pan/Tilt Cam Plus 3K)</li>
+              <li>スマートテレビドアホン (Video Doorbell)</li>
+            </ul>
+            <span style="color: var(--accent-amber);">※ 屋外カメラ、屋外見守りカメラ、ソーラー防犯カメラ等はAPI対象外のため検出されません。</span>
+          </div>
+        </details>
+      </div>
+    </div>
+  </div>
+
+  <!-- 📋 localhost接続専用 開発システムログモーダル -->
+  <div id="debugLogModal" class="modal-backdrop hidden">
+    <div class="modal-box" style="max-width: 700px; width: 95%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+        <h2 style="font-size: 1.15rem; display: flex; align-items: center; gap: 8px;">
+          <span>📋</span> システム通信ログ (localhost専用)
+        </h2>
+        <div style="display: flex; gap: 6px;">
+          <button id="clearLogBtn" class="btn" style="padding: 3px 8px; font-size: 0.8rem;">クリア</button>
+          <button id="copyLogBtn" class="btn" style="padding: 3px 8px; font-size: 0.8rem;">コピー</button>
+          <button id="closeDebugLogBtn" class="btn" style="padding: 3px 8px; font-size: 0.8rem;">✕</button>
+        </div>
+      </div>
+      <div id="debugLogContainer" class="debug-log-view">
+        <div class="log-entry info">[システム起動] ログ待機中...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 📋 localhost専用 フローティングログボタン（右下固定） -->
+  <button id="debugLogFab" class="debug-fab" title="システムログを確認">
+    <span>📋</span>
+    <span class="fab-label">localhost</span>
+  </button>
+
+  <script src="app.js?v=2.6"></script>
+</body>
+</html>
