@@ -18,32 +18,16 @@
     <div class="auth-card">
       <div class="auth-icon">🪲</div>
       <h2>クワガタ飼育室 環境監視</h2>
-      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v2.7 Security Gate</div>
+      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v2.8 Security Gate</div>
       <p class="auth-desc">セキュリティ保護されています。<br>合言葉（パスコード）を入力してください。</p>
       
       <form id="authForm">
-        <div class="form-group" style="margin-bottom: 12px;">
-          <input type="password" id="authPassInput" class="form-input auth-input" placeholder="合言葉 (例: 7777 / lojing2026)" autocomplete="current-password" autofocus required>
+        <div class="form-group" style="margin-bottom: 14px;">
+          <input type="password" id="authPassInput" class="form-input auth-input" placeholder="合言葉を入力..." autocomplete="current-password" autofocus required>
         </div>
         <div id="authErrorMsg" class="auth-error-msg hidden">合言葉が正しくありません</div>
         <button type="submit" id="authSubmitBtn" class="btn btn-primary btn-large" style="width: 100%;">🔓 解除して入場</button>
       </form>
-
-      <!-- 🔑 有効な合言葉ヒント案内 -->
-      <div class="auth-hint-box" style="margin-top: 14px; font-size: 0.8rem; background: rgba(56, 189, 248, 0.08); border: 1px dashed rgba(56, 189, 248, 0.3); border-radius: 8px; padding: 10px; color: var(--text-muted); line-height: 1.5;">
-        <span>🔑 <strong>設定済み合言葉:</strong></span>
-        <div style="margin-top: 4px; display: flex; justify-content: center; gap: 8px;">
-          <code style="background: rgba(15, 23, 42, 0.8); color: #38bdf8; padding: 2px 6px; border-radius: 4px; cursor: pointer;" title="クリックで自動入力" id="hintCode1">7777</code>
-          <code style="background: rgba(15, 23, 42, 0.8); color: #38bdf8; padding: 2px 6px; border-radius: 4px; cursor: pointer;" title="クリックで自動入力" id="hintCode2">lojing2026</code>
-        </div>
-      </div>
-
-      <!-- 🛠️ localhost開発環境専用 ワンクリック解除エリア -->
-      <div id="localhostAuthBox" class="localhost-auth-box hidden" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-color);">
-        <button type="button" id="localhostUnlockBtn" class="btn btn-cool btn-large" style="width: 100%; font-size: 0.85rem; padding: 10px;">
-          🛠️ Localhost開発環境: ワンクリック入場
-        </button>
-      </div>
     </div>
   </div>
 
@@ -55,7 +39,7 @@
         <span class="brand-icon">🪲</span>
         <div>
           <h1>クワガタ飼育室 環境監視</h1>
-          <div class="app-sub-title">Kuwagata Room Monitor v2.7</div>
+          <div class="app-sub-title">Kuwagata Room Monitor v2.8</div>
         </div>
       </div>
       <div class="header-actions">
@@ -389,6 +373,6 @@
     <span class="fab-label">localhost</span>
   </button>
 
-  <script src="app.js?v=2.7"></script>
+  <script src="app.js?v=2.8"></script>
 </body>
 </html>

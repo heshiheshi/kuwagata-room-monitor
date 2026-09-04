@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v2.7
- * 最新Cloudflare Workers統合基盤（Workers + Static Assets）完全対応
+ * Kuwagata Room Monitor - Main Application Logic v2.8
+ * セキュリティ強化: 画面上の合言葉ヒントの完全撤去（全環境ブラインド認証ゲート）
  */
 
-const APP_VERSION = "v2.7";
+const APP_VERSION = "v2.8";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -180,10 +180,6 @@ const elements = {
   authPassInput: document.getElementById("authPassInput"),
   authSubmitBtn: document.getElementById("authSubmitBtn"),
   authErrorMsg: document.getElementById("authErrorMsg"),
-  localhostAuthBox: document.getElementById("localhostAuthBox"),
-  localhostUnlockBtn: document.getElementById("localhostUnlockBtn"),
-  hintCode1: document.getElementById("hintCode1"),
-  hintCode2: document.getElementById("hintCode2"),
   appWrapper: document.getElementById("appWrapper"),
   logoutBtn: document.getElementById("logoutBtn"),
   connectionStatus: document.getElementById("connectionStatus"),
@@ -288,25 +284,17 @@ function initLocalhostDebugMode() {
       elements.debugLogFab.classList.remove("hidden");
       elements.debugLogFab.style.display = "flex";
     }
-    if (elements.localhostAuthBox) {
-      elements.localhostAuthBox.classList.remove("hidden");
-    }
 
-    logger.add("success", "開発環境（localhost）を検出しました。ワンクリック入場＆右下にLocalhostログボタンを表示中。", {
+    logger.add("success", "開発環境（localhost）を検出しました。右下にLocalhostログボタンを表示中。", {
       host: window.location.host,
       protocol: window.location.protocol,
       mode: "Development / Localhost",
-      buttonStatus: "Always Visible",
-      localhostBypassAvailable: true,
-      validPasscodes: VALID_PASSCODES
+      buttonStatus: "Always Visible"
     });
   } else {
     if (elements.debugLogFab) {
       elements.debugLogFab.classList.add("hidden");
       elements.debugLogFab.style.display = "none";
-    }
-    if (elements.localhostAuthBox) {
-      elements.localhostAuthBox.classList.add("hidden");
     }
   }
 }
@@ -520,29 +508,6 @@ function setupEventListeners() {
         e.preventDefault();
         handleAuthSubmit();
       }
-    });
-  }
-
-  // 合言葉クリックで自動入力＆送信
-  if (elements.hintCode1) {
-    elements.hintCode1.addEventListener("click", () => {
-      if (elements.authPassInput) elements.authPassInput.value = elements.hintCode1.textContent.trim();
-      handleAuthSubmit(elements.hintCode1.textContent.trim());
-    });
-  }
-
-  if (elements.hintCode2) {
-    elements.hintCode2.addEventListener("click", () => {
-      if (elements.authPassInput) elements.authPassInput.value = elements.hintCode2.textContent.trim();
-      handleAuthSubmit(elements.hintCode2.textContent.trim());
-    });
-  }
-
-  // 🛠️ Localhost開発環境ワンクリック入場
-  if (elements.localhostUnlockBtn) {
-    elements.localhostUnlockBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      handleLocalhostBypass();
     });
   }
 
