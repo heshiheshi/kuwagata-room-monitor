@@ -1,8 +1,7 @@
 name = "kuwagata-room-monitor"
-compatibility_date = "2024-01-01"
-pages_build_output_dir = "./"
+main = "worker.js"
+compatibility_date = "2024-09-01"
 
-# 将来のKVバインディング用
-# [[kv_namespaces]]
-# binding = "MONITOR_KV"
-# id = "your-kv-id-here"
+[assets]
+directory = "./"
+not_found_handling = "single-page-application"

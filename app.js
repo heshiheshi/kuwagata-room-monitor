@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v2.6
- * クラウド（Cloudflare Pages）＆GitHub連携対応（端末完全ローカル保存BYOK方式）
+ * Kuwagata Room Monitor - Main Application Logic v2.7
+ * 最新Cloudflare Workers統合基盤（Workers + Static Assets）完全対応
  */
 
-const APP_VERSION = "v2.6";
+const APP_VERSION = "v2.7";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
