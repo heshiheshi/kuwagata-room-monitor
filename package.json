@@ -1,0 +1,10 @@
+{
+  "name": "kuwagata-room-monitor",
+  "version": "2.6.0",
+  "description": "Kuwagata Room Monitor",
+  "scripts": {
+    "build": "echo 'No build step required'",
+    "dev": "npx wrangler pages dev . --port 8788",
+    "deploy": "npx wrangler pages deploy ."
+  }
+}
