@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.0.2
- * 状態変数（airconEvents）の初期化復元、パスコードコピペ時の不可視文字完全除去
+ * Kuwagata Room Monitor - Main Application Logic v3.0.3
+ * updateOutdoorMeterSettingsUI のトップレベルスコープ配置、デバイス一覧取得エラーの完全解消
  */
 
-const APP_VERSION = "v3.0.2";
+const APP_VERSION = "v3.0.3";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -723,52 +723,7 @@ function setupEventListeners() {
     });
   }
 
-  /**
-   * ☀️ 外気温センサー設定セレクトボックスの選択肢＆現在の選択状態を更新
-   */
-  function updateOutdoorMeterSettingsUI() {
-    if (!elements.outdoorMeterSelect) return;
-
-    // 現在取得できている温度計リスト
-    const allMeters = (appState.devices || []).filter(d => 
-      (d.deviceType.includes("Meter") || d.deviceType.includes("Sensor") || d.deviceType.includes("Hub")) &&
-      !appState.excludedDeviceIds.includes(d.deviceId)
-    );
-
-    // キャッシュやthermometersも含めてユニーク化
-    const meterMap = new Map();
-    (appState.thermometers || []).forEach(m => meterMap.set(m.deviceId, m));
-    (appState.meterDataCache || []).forEach(m => meterMap.set(m.device.deviceId, m.device));
-    allMeters.forEach(m => meterMap.set(m.deviceId, m));
-
-    // もし既定の E9D8AF0D85F9 がまだリストに無ければ補完登録
-    if (appState.outdoorMeterId && !meterMap.has(appState.outdoorMeterId)) {
-      meterMap.set(appState.outdoorMeterId, {
-        deviceId: appState.outdoorMeterId,
-        deviceName: "作業場温湿時計 (外気温)"
-      });
-    }
-
-    let selectHtml = `<option value="">（設定なし / 全て飼育室内の左軸として表示）</option>`;
-    meterMap.forEach(meter => {
-      const mac = formatMacAddress(meter.deviceId);
-      const isSelected = (meter.deviceId === appState.outdoorMeterId);
-      selectHtml += `<option value="${meter.deviceId}" ${isSelected ? "selected" : ""}>${escapeHtml(meter.deviceName)} [${mac}]</option>`;
-    });
-
-    elements.outdoorMeterSelect.innerHTML = selectHtml;
-
-    // 現在の選択ラベル表示
-    const currentSelectedMeter = meterMap.get(appState.outdoorMeterId);
-    if (currentSelectedMeter) {
-      if (elements.outdoorMeterCurrentName) elements.outdoorMeterCurrentName.textContent = currentSelectedMeter.deviceName;
-      if (elements.outdoorMeterMacBadge) elements.outdoorMeterMacBadge.textContent = `BLE MAC: ${formatMacAddress(currentSelectedMeter.deviceId)}`;
-    } else {
-      if (elements.outdoorMeterCurrentName) elements.outdoorMeterCurrentName.textContent = "未設定 (全て室内)";
-      if (elements.outdoorMeterMacBadge) elements.outdoorMeterMacBadge.textContent = "";
-    }
-  }
-
+  // ☀️ 外気温センサー設定セレクトボックスの変更イベントリスナー
   if (elements.outdoorMeterSelect) {
     elements.outdoorMeterSelect.addEventListener("change", (e) => {
       const newMeterId = e.target.value;
@@ -846,6 +801,52 @@ function setupEventListeners() {
 
   elements.btnShutterOpen.addEventListener("click", () => controlShutter("open"));
   elements.btnShutterClose.addEventListener("click", () => controlShutter("close"));
+}
+
+/**
+ * ☀️ 外気温センサー設定セレクトボックスの選択肢＆現在の選択状態を更新（トップレベル関数）
+ */
+function updateOutdoorMeterSettingsUI() {
+  if (!elements.outdoorMeterSelect) return;
+
+  // 現在取得できている温度計リスト
+  const allMeters = (appState.devices || []).filter(d => 
+    (d.deviceType.includes("Meter") || d.deviceType.includes("Sensor") || d.deviceType.includes("Hub")) &&
+    !appState.excludedDeviceIds.includes(d.deviceId)
+  );
+
+  // キャッシュやthermometersも含めてユニーク化
+  const meterMap = new Map();
+  (appState.thermometers || []).forEach(m => meterMap.set(m.deviceId, m));
+  (appState.meterDataCache || []).forEach(m => meterMap.set(m.device.deviceId, m.device));
+  allMeters.forEach(m => meterMap.set(m.deviceId, m));
+
+  // もし既定の E9D8AF0D85F9 がまだリストに無ければ補完登録
+  if (appState.outdoorMeterId && !meterMap.has(appState.outdoorMeterId)) {
+    meterMap.set(appState.outdoorMeterId, {
+      deviceId: appState.outdoorMeterId,
+      deviceName: "作業場温湿時計 (外気温)"
+    });
+  }
+
+  let selectHtml = `<option value="">（設定なし / 全て飼育室内の左軸として表示）</option>`;
+  meterMap.forEach(meter => {
+    const mac = formatMacAddress(meter.deviceId);
+    const isSelected = (meter.deviceId === appState.outdoorMeterId);
+    selectHtml += `<option value="${meter.deviceId}" ${isSelected ? "selected" : ""}>${escapeHtml(meter.deviceName)} [${mac}]</option>`;
+  });
+
+  elements.outdoorMeterSelect.innerHTML = selectHtml;
+
+  // 現在の選択ラベル表示
+  const currentSelectedMeter = meterMap.get(appState.outdoorMeterId);
+  if (currentSelectedMeter) {
+    if (elements.outdoorMeterCurrentName) elements.outdoorMeterCurrentName.textContent = currentSelectedMeter.deviceName;
+    if (elements.outdoorMeterMacBadge) elements.outdoorMeterMacBadge.textContent = `BLE MAC: ${formatMacAddress(currentSelectedMeter.deviceId)}`;
+  } else {
+    if (elements.outdoorMeterCurrentName) elements.outdoorMeterCurrentName.textContent = "未設定 (全て室内)";
+    if (elements.outdoorMeterMacBadge) elements.outdoorMeterMacBadge.textContent = "";
+  }
 }
 
 function applyOrientationMode(mode) {
