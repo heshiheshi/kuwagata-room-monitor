@@ -3,11 +3,15 @@
  * 外部npmパッケージ不要（Node.js標準機能のみで動作）
  */
 
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
-const crypto = require("crypto");
-const https = require("https");
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
+import https from "node:https";
+import { fileURLToPath } from "node:url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const PORT = 8788;
 const PUBLIC_DIR = __dirname;

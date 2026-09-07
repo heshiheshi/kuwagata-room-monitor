@@ -5,6 +5,7 @@
   "main": "worker.js",
   "type": "module",
   "scripts": {
+    "start": "node dev-server.js",
     "build": "echo 'Build complete'",
     "dev": "npx wrangler dev",
     "deploy": "npx wrangler deploy"
