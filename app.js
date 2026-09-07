@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v2.9
- * 温度計カードの機器名ホバー/タップによる固有BLE MACアドレス（シリアルID）ツールチップ表示
+ * Kuwagata Room Monitor - Main Application Logic v3.0
+ * 温度グラフの左右2軸（飼育室/外気温独立スケール）表示対応＆外気温センサー動的指定機能
  */
 
-const APP_VERSION = "v2.9";
+const APP_VERSION = "v3.0";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -37,7 +37,8 @@ const STORAGE_KEYS = {
   AIRCON_CONFIG: "kuwagata_aircon_config",
   ORIENTATION_MODE: "kuwagata_orientation_mode",
   CHART_MIN: "kuwagata_chart_min_temp",
-  CHART_MAX: "kuwagata_chart_max_temp"
+  CHART_MAX: "kuwagata_chart_max_temp",
+  OUTDOOR_METER_ID: "kuwagata_outdoor_meter_id" // 外気温センサーdeviceId
 };
 
 const MODE_NAMES = { "1": "自動", "2": "冷房", "3": "除湿", "4": "送風", "5": "暖房" };
@@ -155,8 +156,11 @@ if (isNaN(savedChartMin)) savedChartMin = 15.0;
 let savedChartMax = parseFloat(localStorage.getItem(STORAGE_KEYS.CHART_MAX));
 if (isNaN(savedChartMax)) savedChartMax = 18.0;
 
-let airconEvents = [];
-try { airconEvents = JSON.parse(localStorage.getItem(STORAGE_KEYS.AIRCON_EVENTS) || "[]"); } catch (e) {}
+let savedOutdoorMeterId = localStorage.getItem(STORAGE_KEYS.OUTDOOR_METER_ID);
+if (savedOutdoorMeterId === null) {
+  // デフォルトで作業場温湿時計（E9D8AF0D85F9）を外気温として初期設定
+  savedOutdoorMeterId = "E9D8AF0D85F9";
+}
 
 let appState = {
   isAuth: false,
@@ -176,6 +180,7 @@ let appState = {
   selectedGraphHours: 1, // 1時間 | 6時間 | 24時間 | 0(すべて)
   chartMinTemp: savedChartMin,
   chartMaxTemp: savedChartMax,
+  outdoorMeterId: savedOutdoorMeterId, // 外気温として扱うdeviceId
   hiddenMeterIds: [], // グラフで非表示になっているdeviceIdの配列
   soloMeterId: null,   // 単独表示中のdeviceId (nullなら通常表示)
   keepAliveTimer: null,
@@ -214,6 +219,11 @@ const elements = {
   chartMinTempInput: document.getElementById("chartMinTempInput"),
   chartMaxTempInput: document.getElementById("chartMaxTempInput"),
   btnSaveChartScale: document.getElementById("btnSaveChartScale"),
+
+  // ☀️ 外気温設定要素
+  outdoorMeterSelect: document.getElementById("outdoorMeterSelect"),
+  outdoorMeterCurrentName: document.getElementById("outdoorMeterCurrentName"),
+  outdoorMeterMacBadge: document.getElementById("outdoorMeterMacBadge"),
 
   // 💬 エアコン送信イベント詳細ツールチップ & 履歴チップ
   airconEventTooltip: document.getElementById("airconEventTooltip"),
@@ -277,7 +287,9 @@ window.addEventListener("DOMContentLoaded", () => {
     screenResolution: `${window.innerWidth}x${window.innerHeight} (dpr: ${window.devicePixelRatio || 1})`,
     screenOrientation: window.screen && window.screen.orientation ? window.screen.orientation.type : "unknown",
     savedDevicesCount: appState.devices.length,
-    cachedMetersCount: appState.meterDataCache.length
+    cachedMetersCount: appState.meterDataCache.length,
+    outdoorMeterId: appState.outdoorMeterId,
+    outdoorMeterMac: formatMacAddress(appState.outdoorMeterId)
   });
 
   checkAuthentication();
@@ -640,6 +652,7 @@ function setupEventListeners() {
   });
 
   elements.settingsBtn.addEventListener("click", () => {
+    updateOutdoorMeterSettingsUI();
     elements.settingsModal.classList.remove("hidden");
     logger.add("info", "設定モーダルを開きました");
   });
@@ -698,6 +711,75 @@ function setupEventListeners() {
       });
 
       alert(`グラフ目盛りを「${minVal}℃ 〜 ${maxVal}℃」に設定しました。`);
+    });
+  }
+
+  /**
+   * ☀️ 外気温センサー設定セレクトボックスの選択肢＆現在の選択状態を更新
+   */
+  function updateOutdoorMeterSettingsUI() {
+    if (!elements.outdoorMeterSelect) return;
+
+    // 現在取得できている温度計リスト
+    const allMeters = (appState.devices || []).filter(d => 
+      (d.deviceType.includes("Meter") || d.deviceType.includes("Sensor") || d.deviceType.includes("Hub")) &&
+      !appState.excludedDeviceIds.includes(d.deviceId)
+    );
+
+    // キャッシュやthermometersも含めてユニーク化
+    const meterMap = new Map();
+    (appState.thermometers || []).forEach(m => meterMap.set(m.deviceId, m));
+    (appState.meterDataCache || []).forEach(m => meterMap.set(m.device.deviceId, m.device));
+    allMeters.forEach(m => meterMap.set(m.deviceId, m));
+
+    // もし既定の E9D8AF0D85F9 がまだリストに無ければ補完登録
+    if (appState.outdoorMeterId && !meterMap.has(appState.outdoorMeterId)) {
+      meterMap.set(appState.outdoorMeterId, {
+        deviceId: appState.outdoorMeterId,
+        deviceName: "作業場温湿時計 (外気温)"
+      });
+    }
+
+    let selectHtml = `<option value="">（設定なし / 全て飼育室内の左軸として表示）</option>`;
+    meterMap.forEach(meter => {
+      const mac = formatMacAddress(meter.deviceId);
+      const isSelected = (meter.deviceId === appState.outdoorMeterId);
+      selectHtml += `<option value="${meter.deviceId}" ${isSelected ? "selected" : ""}>${escapeHtml(meter.deviceName)} [${mac}]</option>`;
+    });
+
+    elements.outdoorMeterSelect.innerHTML = selectHtml;
+
+    // 現在の選択ラベル表示
+    const currentSelectedMeter = meterMap.get(appState.outdoorMeterId);
+    if (currentSelectedMeter) {
+      if (elements.outdoorMeterCurrentName) elements.outdoorMeterCurrentName.textContent = currentSelectedMeter.deviceName;
+      if (elements.outdoorMeterMacBadge) elements.outdoorMeterMacBadge.textContent = `BLE MAC: ${formatMacAddress(currentSelectedMeter.deviceId)}`;
+    } else {
+      if (elements.outdoorMeterCurrentName) elements.outdoorMeterCurrentName.textContent = "未設定 (全て室内)";
+      if (elements.outdoorMeterMacBadge) elements.outdoorMeterMacBadge.textContent = "";
+    }
+  }
+
+  if (elements.outdoorMeterSelect) {
+    elements.outdoorMeterSelect.addEventListener("change", (e) => {
+      const newMeterId = e.target.value;
+      appState.outdoorMeterId = newMeterId;
+      if (newMeterId) {
+        localStorage.setItem(STORAGE_KEYS.OUTDOOR_METER_ID, newMeterId);
+      } else {
+        localStorage.removeItem(STORAGE_KEYS.OUTDOOR_METER_ID);
+      }
+
+      updateOutdoorMeterSettingsUI();
+
+      // UIカードとグラフを即座に同期再描画
+      renderThermometerCards(appState.meterDataCache, false);
+      updateTempChart();
+
+      logger.add("success", `☀️ 外気温センサー設定を変更しました`, {
+        outdoorMeterId: newMeterId || "なし",
+        outdoorMeterMac: formatMacAddress(newMeterId)
+      });
     });
   }
 
@@ -1199,7 +1281,8 @@ function initTempChart() {
           padding: 10,
           callbacks: {
             label: function(context) {
-              return ` ${context.dataset.label}: ${context.parsed.y.toFixed(1)} ℃`;
+              const unit = " ℃";
+              return ` ${context.dataset.label}: ${context.parsed.y.toFixed(1)}${unit}`;
             }
           }
         }
@@ -1210,13 +1293,38 @@ function initTempChart() {
           ticks: { color: "#94a3b8", maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }
         },
         y: {
+          type: "linear",
+          display: true,
+          position: "left",
           grid: { color: "rgba(255, 255, 255, 0.08)" },
           ticks: {
             color: "#94a3b8",
             callback: function(val) { return val + " ℃"; }
           },
           suggestedMin: appState.chartMinTemp,
-          suggestedMax: appState.chartMaxTemp
+          suggestedMax: appState.chartMaxTemp,
+          title: {
+            display: true,
+            text: "飼育室 [左軸]",
+            color: "#94a3b8",
+            font: { size: 10, weight: "bold" }
+          }
+        },
+        yOutdoor: {
+          type: "linear",
+          display: true,
+          position: "right",
+          grid: { drawOnChartArea: false }, // 左軸のグリッド線と重なって二重線になるのを防止
+          ticks: {
+            color: "#c084fc",
+            callback: function(val) { return val + " ℃"; }
+          },
+          title: {
+            display: true,
+            text: "外気温 [右軸]",
+            color: "#c084fc",
+            font: { size: 10, weight: "bold" }
+          }
         }
       }
     }
@@ -1260,7 +1368,10 @@ function updateTempChart() {
   // 表示対象の温度計一覧
   const meters = appState.thermometers.length > 0 ? appState.thermometers : (appState.meterDataCache || []).map(m => m.device);
 
+  let hasVisibleOutdoor = false;
+
   const datasets = meters.map((meter, index) => {
+    const isOutdoor = (meter.deviceId === appState.outdoorMeterId);
     const color = SENSOR_COLORS[index % SENSOR_COLORS.length];
     const dataPoints = filteredHistory.map(h => {
       const r = h.readings[meter.deviceId];
@@ -1269,10 +1380,17 @@ function updateTempChart() {
 
     // 役割ラベルの生成
     let labelName = meter.deviceName;
-    if (labelName.includes("吹") || labelName.includes("エアコン")) labelName = "❄️ 吹き出し口";
-    else if (labelName.includes("上")) labelName = "棚・上段";
-    else if (labelName.includes("中")) labelName = "棚・中段";
-    else if (labelName.includes("下")) labelName = "棚・下段";
+    if (isOutdoor) {
+      labelName = `☀️ 外気温 (${meter.deviceName})`;
+    } else if (labelName.includes("吹") || labelName.includes("エアコン")) {
+      labelName = "❄️ 吹き出し口";
+    } else if (labelName.includes("上")) {
+      labelName = "棚・上段";
+    } else if (labelName.includes("中")) {
+      labelName = "棚・中段";
+    } else if (labelName.includes("下")) {
+      labelName = "棚・下段";
+    }
 
     // 案Bの表示判定：
     // - soloMeterIdがある場合：そのmeterのみ表示
@@ -1284,11 +1402,36 @@ function updateTempChart() {
       isHidden = appState.hiddenMeterIds.includes(meter.deviceId);
     }
 
+    if (isOutdoor && !isHidden) {
+      hasVisibleOutdoor = true;
+    }
+
+    if (isOutdoor) {
+      // ☀️ 外気温専用データセット（右軸 yOutdoor・破線・パープル系）
+      return {
+        label: labelName,
+        data: dataPoints,
+        yAxisID: "yOutdoor",
+        borderColor: "#c084fc",
+        backgroundColor: "rgba(192, 132, 252, 0.15)",
+        borderDash: [6, 4], // 室内棚と一目で区別できる点線
+        borderWidth: 2.2,
+        pointRadius: filteredHistory.length > 30 ? 0 : 3,
+        pointHoverRadius: 6,
+        tension: 0.25,
+        fill: false,
+        hidden: isHidden
+      };
+    }
+
+    // 🏠 室内飼育用データセット（左軸 y・実線）
     return {
       label: labelName,
       data: dataPoints,
+      yAxisID: "y",
       borderColor: color.border,
       backgroundColor: color.bg,
+      borderDash: [],
       borderWidth: 2.5,
       pointRadius: filteredHistory.length > 30 ? 0 : 3,
       pointHoverRadius: 6,
@@ -1297,6 +1440,11 @@ function updateTempChart() {
       hidden: isHidden // Chart.jsのデータセット非表示属性
     };
   });
+
+  // 外気温が表示中であれば右軸を表示、非表示なら非表示
+  if (appState.chartInstance.options.scales && appState.chartInstance.options.scales.yOutdoor) {
+    appState.chartInstance.options.scales.yOutdoor.display = hasVisibleOutdoor;
+  }
 
   // フィルタリングされたエアコン送信イベント
   const totalLabels = labels.length;
@@ -1480,8 +1628,11 @@ function renderThermometerCards(meterDataList, isFresh = true) {
     const humidity = status.humidity !== undefined ? status.humidity : "--";
     const battery = status.battery !== undefined ? `${status.battery}%` : "--";
 
+    const isOutdoor = (device.deviceId === appState.outdoorMeterId);
     let roleBadge = `センサー #${index + 1}`;
-    if (device.deviceName.includes("吹") || device.deviceName.includes("エアコン")) {
+    if (isOutdoor) {
+      roleBadge = "☀️ 外気温";
+    } else if (device.deviceName.includes("吹") || device.deviceName.includes("エアコン")) {
       roleBadge = "❄️ 吹き出し口";
     } else if (device.deviceName.includes("上")) {
       roleBadge = "棚・上段";
@@ -1491,7 +1642,17 @@ function renderThermometerCards(meterDataList, isFresh = true) {
       roleBadge = "棚・下段";
     }
 
-    const color = SENSOR_COLORS[index % SENSOR_COLORS.length];
+    let color = SENSOR_COLORS[index % SENSOR_COLORS.length];
+    if (isOutdoor) {
+      color = {
+        border: "#c084fc",
+        bg: "rgba(192, 132, 252, 0.15)",
+        cardBg: "linear-gradient(145deg, rgba(192, 132, 252, 0.12) 0%, rgba(15, 23, 42, 0.85) 100%)",
+        cardBorder: "rgba(192, 132, 252, 0.4)",
+        badgeBg: "rgba(192, 132, 252, 0.2)",
+        badgeText: "#c084fc"
+      };
+    }
 
     let tempColor = "var(--text-main)";
     if (typeof temp === "number") {
@@ -1887,8 +2048,11 @@ function renderDeviceListModal(devices, infrareds) {
       );
       refreshThermometers();
       renderCameraCards(appState.cameras);
+      updateOutdoorMeterSettingsUI();
     });
   });
+
+  updateOutdoorMeterSettingsUI();
 }
 
 function updateStatus(text, isError) {

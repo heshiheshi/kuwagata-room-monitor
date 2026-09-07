@@ -18,7 +18,7 @@
     <div class="auth-card">
       <div class="auth-icon">🪲</div>
       <h2>クワガタ飼育室 環境監視</h2>
-      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v2.9 Security Gate</div>
+      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.0 Security Gate</div>
       <p class="auth-desc">セキュリティ保護されています。<br>合言葉（パスコード）を入力してください。</p>
       
       <form id="authForm">
@@ -39,7 +39,7 @@
         <span class="brand-icon">🪲</span>
         <div>
           <h1>クワガタ飼育室 環境監視</h1>
-          <div class="app-sub-title">Kuwagata Room Monitor v2.9</div>
+          <div class="app-sub-title">Kuwagata Room Monitor v3.0</div>
         </div>
       </div>
       <div class="header-actions">
@@ -318,6 +318,27 @@
         </div>
       </div>
 
+      <!-- ☀️ 外気温センサー（2軸グラフ）設定 -->
+      <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+        <h4 style="font-size: 0.95rem; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between;">
+          <span>☀️ 外気温センサー（2軸グラフ）設定</span>
+          <span style="font-size: 0.72rem; color: #a78bfa; background: rgba(167, 139, 250, 0.15); padding: 1px 6px; border-radius: 4px; font-weight: 600;">右軸独立スケール</span>
+        </h4>
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 10px;">
+          外気温として扱う温湿度計を指定します。グラフ上で飼育室とは別の「右側目盛り（2軸・点線）」として描画され、室内の微細な温度変化を潰さずに外気温と比較できます。
+        </p>
+        <div style="background: var(--bg-primary); padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+          <label style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 6px;">外気温用温度計の選択</label>
+          <select id="outdoorMeterSelect" class="form-input" style="font-weight: 600; margin-bottom: 6px;">
+            <option value="">（設定なし / 全て飼育室内の左軸として表示）</option>
+          </select>
+          <div id="outdoorMeterInfo" style="font-size: 0.75rem; color: var(--text-muted); display: flex; justify-content: space-between; align-items: center;">
+            <span>現在設定: <strong id="outdoorMeterCurrentName" style="color: #a78bfa;">未選択</strong></span>
+            <span id="outdoorMeterMacBadge" style="font-family: monospace; font-size: 0.7rem; color: #94a3b8;"></span>
+          </div>
+        </div>
+      </div>
+
       <div id="deviceListSection" style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
         <h4 style="font-size: 0.95rem; margin-bottom: 10px;">検出されたデバイス一覧</h4>
         <div id="deviceListContainer" style="font-size: 0.85rem; color: var(--text-muted);">
@@ -373,6 +394,6 @@
     <span class="fab-label">localhost</span>
   </button>
 
-  <script src="app.js?v=2.9"></script>
+  <script src="app.js?v=3.0"></script>
 </body>
 </html>
