@@ -18,7 +18,7 @@
     <div class="auth-card">
       <div class="auth-icon">🪲</div>
       <h2>クワガタ飼育室 環境監視</h2>
-      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.0.3 Security Gate</div>
+      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.1.0 Security Gate</div>
       <p class="auth-desc">セキュリティ保護されています。<br>合言葉（パスコード）を入力してください。</p>
       
       <form id="authForm">
@@ -39,7 +39,7 @@
         <span class="brand-icon">🪲</span>
         <div>
           <h1>クワガタ飼育室 環境監視</h1>
-          <div class="app-sub-title">Kuwagata Room Monitor v3.0.3</div>
+          <div class="app-sub-title">Kuwagata Room Monitor v3.1.0</div>
         </div>
       </div>
       <div class="header-actions">
@@ -339,6 +339,20 @@
         </div>
       </div>
 
+      <!-- 🎨 温度計カラー設定 & 並び順リセット -->
+      <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <h4 style="font-size: 0.95rem;">🎨 各温度計のカラー設定</h4>
+          <button type="button" id="btnResetMeterOrder" class="btn" style="padding: 2px 8px; font-size: 0.72rem; color: var(--text-muted);" title="カード並び順を初期状態に戻します">🔄 並び順リセット</button>
+        </div>
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 10px;">
+          温度計カードおよびグラフの折れ線色を変更できます（カード上の「🎨」アイコンからも変更可能）。
+        </p>
+        <div id="meterColorSettingsList" style="display: flex; flex-direction: column; gap: 8px; background: var(--bg-primary); padding: 12px; border-radius: 8px; border: 1px solid var(--border-color);">
+          <!-- JSで動的に温度計ごとのカラーパレットをレンダリング -->
+        </div>
+      </div>
+
       <div id="deviceListSection" style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
         <h4 style="font-size: 0.95rem; margin-bottom: 10px;">検出されたデバイス一覧</h4>
         <div id="deviceListContainer" style="font-size: 0.85rem; color: var(--text-muted);">
@@ -394,6 +408,6 @@
     <span class="fab-label">localhost</span>
   </button>
 
-  <script src="app.js?v=3.0.3"></script>
+  <script src="app.js?v=3.1.0"></script>
 </body>
 </html>

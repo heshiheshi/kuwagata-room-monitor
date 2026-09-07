@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.0.3
- * updateOutdoorMeterSettingsUI のトップレベルスコープ配置、デバイス一覧取得エラーの完全解消
+ * Kuwagata Room Monitor - Main Application Logic v3.1.0
+ * 温度計カードのドラッグ＆ドロップ並び替え（位置変更）＆各温度計のカラーカスタマイズ機能
  */
 
-const APP_VERSION = "v3.0.3";
+const APP_VERSION = "v3.1.0";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -38,16 +38,30 @@ const STORAGE_KEYS = {
   ORIENTATION_MODE: "kuwagata_orientation_mode",
   CHART_MIN: "kuwagata_chart_min_temp",
   CHART_MAX: "kuwagata_chart_max_temp",
-  OUTDOOR_METER_ID: "kuwagata_outdoor_meter_id" // 外気温センサーdeviceId
+  OUTDOOR_METER_ID: "kuwagata_outdoor_meter_id", // 外気温センサーdeviceId
+  METER_ORDER: "kuwagata_meter_order",           // 温度計カードの並び順 (deviceId配列)
+  METER_COLORS: "kuwagata_meter_colors"          // 各温度計のカスタム色マッピング { [deviceId]: "#hex" }
 };
 
 const MODE_NAMES = { "1": "自動", "2": "冷房", "3": "除湿", "4": "送風", "5": "暖房" };
 const FAN_NAMES = { "1": "自動", "2": "弱", "3": "中", "4": "強" };
 
-// グラフ描画カラーパレット (視認性の高い4色 + カード背景用)
+// 🎨 視認性の高いプリセットカラーパレット (8色)
+const PRESET_COLORS = [
+  "#38bdf8", // 水色 (シアン)
+  "#fb923c", // オレンジ
+  "#34d399", // エメラルド (緑)
+  "#c084fc", // パープル (紫)
+  "#f43f5e", // ローズ (赤ピンク)
+  "#eab308", // アンバー (黄)
+  "#06b6d4", // ティール (青緑)
+  "#ec4899"  // マゼンタ (ピンク)
+];
+
+// グラフ描画デフォルトカラーパレット (視認性の高い基本5色)
 const SENSOR_COLORS = [
   { 
-    border: "#38bdf8", // 水色 (吹き出し口)
+    border: "#38bdf8", // 水色
     bg: "rgba(56, 189, 248, 0.15)",
     cardBg: "linear-gradient(145deg, rgba(56, 189, 248, 0.12) 0%, rgba(15, 23, 42, 0.85) 100%)",
     cardBorder: "rgba(56, 189, 248, 0.4)",
@@ -55,7 +69,7 @@ const SENSOR_COLORS = [
     badgeText: "#38bdf8"
   },
   { 
-    border: "#fb923c", // オレンジ (上段)
+    border: "#fb923c", // オレンジ
     bg: "rgba(251, 146, 60, 0.15)",
     cardBg: "linear-gradient(145deg, rgba(251, 146, 60, 0.12) 0%, rgba(15, 23, 42, 0.85) 100%)",
     cardBorder: "rgba(251, 146, 60, 0.4)",
@@ -63,7 +77,7 @@ const SENSOR_COLORS = [
     badgeText: "#fb923c"
   },
   { 
-    border: "#34d399", // エメラルド (中段)
+    border: "#34d399", // エメラルド
     bg: "rgba(52, 211, 153, 0.15)",
     cardBg: "linear-gradient(145deg, rgba(52, 211, 153, 0.12) 0%, rgba(15, 23, 42, 0.85) 100%)",
     cardBorder: "rgba(52, 211, 153, 0.4)",
@@ -71,7 +85,7 @@ const SENSOR_COLORS = [
     badgeText: "#34d399"
   },
   { 
-    border: "#c084fc", // パープル (下段)
+    border: "#c084fc", // パープル
     bg: "rgba(192, 132, 252, 0.15)",
     cardBg: "linear-gradient(145deg, rgba(192, 132, 252, 0.12) 0%, rgba(15, 23, 42, 0.85) 100%)",
     cardBorder: "rgba(192, 132, 252, 0.4)",
@@ -79,7 +93,7 @@ const SENSOR_COLORS = [
     badgeText: "#c084fc"
   },
   { 
-    border: "#f43f5e", // ローズ (その他)
+    border: "#f43f5e", // ローズ
     bg: "rgba(244, 63, 94, 0.15)",
     cardBg: "linear-gradient(145deg, rgba(244, 63, 94, 0.12) 0%, rgba(15, 23, 42, 0.85) 100%)",
     cardBorder: "rgba(244, 63, 94, 0.4)",
@@ -87,6 +101,40 @@ const SENSOR_COLORS = [
     badgeText: "#f43f5e"
   }
 ];
+
+/**
+ * HEX色コードをRGBA文字列に変換
+ */
+function hexToRgba(hex, alpha = 1) {
+  let c = String(hex || "#38bdf8").replace("#", "");
+  if (c.length === 3) {
+    c = c.split("").map(x => x + x).join("");
+  }
+  const num = parseInt(c, 16);
+  if (isNaN(num)) return `rgba(56, 189, 248, ${alpha})`;
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * デバイス固有のカスタム色（またはデフォルト色）設定を取得
+ */
+function getMeterColorConfig(deviceId, defaultIndex = 0) {
+  const customHex = (appState && appState.meterColors && appState.meterColors[deviceId]);
+  if (customHex) {
+    return {
+      border: customHex,
+      bg: hexToRgba(customHex, 0.15),
+      cardBg: `linear-gradient(145deg, ${hexToRgba(customHex, 0.12)} 0%, rgba(15, 23, 42, 0.85) 100%)`,
+      cardBorder: hexToRgba(customHex, 0.45),
+      badgeBg: hexToRgba(customHex, 0.2),
+      badgeText: customHex
+    };
+  }
+  return SENSOR_COLORS[defaultIndex % SENSOR_COLORS.length];
+}
 
 // 📋 システムログ管理（リッチ構造化ログ）
 const logger = {
@@ -184,6 +232,8 @@ let appState = {
   chartMinTemp: savedChartMin,
   chartMaxTemp: savedChartMax,
   outdoorMeterId: savedOutdoorMeterId, // 外気温として扱うdeviceId
+  meterOrder: JSON.parse(localStorage.getItem(STORAGE_KEYS.METER_ORDER) || "[]"), // 並び順 [deviceId, ...]
+  meterColors: JSON.parse(localStorage.getItem(STORAGE_KEYS.METER_COLORS) || "{}"), // カスタム色 { [deviceId]: "#hex" }
   hiddenMeterIds: [], // グラフで非表示になっているdeviceIdの配列
   soloMeterId: null,   // 単独表示中のdeviceId (nullなら通常表示)
   keepAliveTimer: null,
@@ -227,6 +277,10 @@ const elements = {
   outdoorMeterSelect: document.getElementById("outdoorMeterSelect"),
   outdoorMeterCurrentName: document.getElementById("outdoorMeterCurrentName"),
   outdoorMeterMacBadge: document.getElementById("outdoorMeterMacBadge"),
+
+  // 🎨 カラー設定 & 並び順要素
+  meterColorSettingsList: document.getElementById("meterColorSettingsList"),
+  btnResetMeterOrder: document.getElementById("btnResetMeterOrder"),
 
   // 💬 エアコン送信イベント詳細ツールチップ & 履歴チップ
   airconEventTooltip: document.getElementById("airconEventTooltip"),
@@ -662,12 +716,26 @@ function setupEventListeners() {
 
   elements.settingsBtn.addEventListener("click", () => {
     updateOutdoorMeterSettingsUI();
+    updateColorSettingsInModal();
     elements.settingsModal.classList.remove("hidden");
     logger.add("info", "設定モーダルを開きました");
   });
   elements.closeSettingsBtn.addEventListener("click", () => {
     elements.settingsModal.classList.add("hidden");
   });
+
+  if (elements.btnResetMeterOrder) {
+    elements.btnResetMeterOrder.addEventListener("click", () => {
+      if (!confirm("温度計カードの並び順を初期状態にリセットしますか？")) return;
+      appState.meterOrder = [];
+      localStorage.removeItem(STORAGE_KEYS.METER_ORDER);
+      renderThermometerCards(appState.meterDataCache, false);
+      updateTempChart();
+      updateColorSettingsInModal();
+      logger.add("info", "温度計カード並び順を初期状態にリセットしました");
+      alert("並び順を初期状態に戻しました。");
+    });
+  }
 
   elements.btnSaveApiKeys.addEventListener("click", () => {
     const token = elements.sbTokenInput.value.trim();
@@ -801,6 +869,125 @@ function setupEventListeners() {
 
   elements.btnShutterOpen.addEventListener("click", () => controlShutter("open"));
   elements.btnShutterClose.addEventListener("click", () => controlShutter("close"));
+}
+
+/**
+ * 保存された並び順（meterOrder）に従って温度計リストをソート
+ */
+function sortMetersByOrder(meters) {
+  if (!meters || !Array.isArray(meters) || meters.length <= 1) return meters;
+  if (!appState.meterOrder || appState.meterOrder.length === 0) return meters;
+
+  return [...meters].sort((a, b) => {
+    const idA = a.deviceId || (a.device && a.device.deviceId) || "";
+    const idB = b.deviceId || (b.device && b.device.deviceId) || "";
+    let idxA = appState.meterOrder.indexOf(idA);
+    let idxB = appState.meterOrder.indexOf(idB);
+    if (idxA === -1) idxA = 999;
+    if (idxB === -1) idxB = 999;
+    return idxA - idxB;
+  });
+}
+
+/**
+ * 現在のDOMカード並び順をlocalStorageに保存
+ */
+function saveCurrentCardOrder() {
+  const currentCards = elements.thermometerGrid.querySelectorAll(".sensor-card");
+  const newOrder = [...currentCards].map(c => c.dataset.id).filter(Boolean);
+  appState.meterOrder = newOrder;
+  localStorage.setItem(STORAGE_KEYS.METER_ORDER, JSON.stringify(newOrder));
+
+  // メーター配列とキャッシュを並び替え
+  if (appState.thermometers && appState.thermometers.length > 0) {
+    appState.thermometers = sortMetersByOrder(appState.thermometers);
+  }
+  if (appState.meterDataCache && appState.meterDataCache.length > 0) {
+    appState.meterDataCache = sortMetersByOrder(appState.meterDataCache);
+  }
+  updateTempChart();
+
+  logger.add("info", "温度計カードの位置（並び順）を保存しました", {
+    newOrder: newOrder
+  });
+}
+
+/**
+ * 🎨 設定モーダル内の温度計カラー設定UIを更新
+ */
+function updateColorSettingsInModal() {
+  if (!elements.meterColorSettingsList) return;
+
+  const meters = (appState.thermometers && appState.thermometers.length > 0)
+    ? appState.thermometers
+    : (appState.meterDataCache || []).map(m => m.device);
+
+  if (!meters || meters.length === 0) {
+    elements.meterColorSettingsList.innerHTML = `<div style="font-size: 0.8rem; color: var(--text-muted); padding: 6px;">検出された温度計がありません</div>`;
+    return;
+  }
+
+  const sortedMeters = sortMetersByOrder(meters);
+  let html = "";
+
+  sortedMeters.forEach((meter, idx) => {
+    const devId = meter.deviceId;
+    const colorCfg = getMeterColorConfig(devId, idx);
+    const currentColor = appState.meterColors[devId] || colorCfg.border;
+    const isOutdoor = (devId === appState.outdoorMeterId);
+    const badgeText = isOutdoor ? "☀️ 外気" : `センサー #${idx + 1}`;
+
+    html += `
+      <div style="display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.03); gap: 8px;">
+        <div style="display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1;">
+          <span style="display: inline-block; width: 12px; height: 12px; border-radius: 50%; background: ${currentColor}; box-shadow: 0 0 6px ${currentColor}; flex-shrink: 0;"></span>
+          <span style="font-size: 0.85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${escapeHtml(meter.deviceName)}</span>
+          <span style="font-size: 0.7rem; color: #94a3b8; background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 3px;">${badgeText}</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 4px; flex-shrink: 0;">
+          ${PRESET_COLORS.map(pColor => `
+            <button type="button" class="preset-color-btn" data-id="${devId}" data-color="${pColor}" style="width: 18px; height: 18px; border-radius: 50%; background: ${pColor}; border: ${pColor.toLowerCase() === currentColor.toLowerCase() ? "2px solid #fff" : "1px solid rgba(255,255,255,0.3)"}; cursor: pointer; padding: 0;" title="${pColor}"></button>
+          `).join("")}
+          <label style="cursor: pointer; margin-left: 4px; display: flex; align-items: center;" title="自由色選択">
+            <input type="color" class="modal-color-input" data-id="${devId}" value="${currentColor}" style="opacity: 0; width: 0; height: 0; position: absolute;">
+            <span style="font-size: 0.85rem; padding: 2px 4px; border-radius: 4px; background: rgba(255,255,255,0.1); line-height: 1;">🎨</span>
+          </label>
+        </div>
+      </div>
+    `;
+  });
+
+  elements.meterColorSettingsList.innerHTML = html;
+
+  // プリセットボタンクリック
+  elements.meterColorSettingsList.querySelectorAll(".preset-color-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const devId = btn.dataset.id;
+      const color = btn.dataset.color;
+      appState.meterColors[devId] = color;
+      localStorage.setItem(STORAGE_KEYS.METER_COLORS, JSON.stringify(appState.meterColors));
+      updateColorSettingsInModal();
+      renderThermometerCards(appState.meterDataCache, false);
+      updateTempChart();
+      logger.add("success", `温度計カラーを変更しました: [${color}]`, { deviceId: devId, color: color });
+    });
+  });
+
+  // カスタムカラー入力
+  elements.meterColorSettingsList.querySelectorAll(".modal-color-input").forEach(input => {
+    input.addEventListener("input", (e) => {
+      const devId = input.dataset.id;
+      const color = e.target.value;
+      appState.meterColors[devId] = color;
+      localStorage.setItem(STORAGE_KEYS.METER_COLORS, JSON.stringify(appState.meterColors));
+      renderThermometerCards(appState.meterDataCache, false);
+      updateTempChart();
+    });
+    input.addEventListener("change", (e) => {
+      updateColorSettingsInModal();
+      logger.add("success", `温度計カスタムカラーを保存しました: [${e.target.value}]`, { deviceId: input.dataset.id, color: e.target.value });
+    });
+  });
 }
 
 /**
@@ -1375,14 +1562,15 @@ function updateTempChart() {
 
   const labels = filteredHistory.map(h => h.label);
 
-  // 表示対象の温度計一覧
-  const meters = appState.thermometers.length > 0 ? appState.thermometers : (appState.meterDataCache || []).map(m => m.device);
+  // 表示対象の温度計一覧（並び順順序を適用）
+  const rawMeters = appState.thermometers.length > 0 ? appState.thermometers : (appState.meterDataCache || []).map(m => m.device);
+  const meters = sortMetersByOrder(rawMeters);
 
   let hasVisibleOutdoor = false;
 
   const datasets = meters.map((meter, index) => {
     const isOutdoor = (meter.deviceId === appState.outdoorMeterId);
-    const color = SENSOR_COLORS[index % SENSOR_COLORS.length];
+    const color = getMeterColorConfig(meter.deviceId, index);
     const dataPoints = filteredHistory.map(h => {
       const r = h.readings[meter.deviceId];
       return r ? r.temp : null;
@@ -1417,13 +1605,13 @@ function updateTempChart() {
     }
 
     if (isOutdoor) {
-      // ☀️ 外気温専用データセット（右軸 yOutdoor・破線・パープル系）
+      // ☀️ 外気温専用データセット（右軸 yOutdoor・破線・カスタムカラー対応）
       return {
         label: labelName,
         data: dataPoints,
         yAxisID: "yOutdoor",
-        borderColor: "#c084fc",
-        backgroundColor: "rgba(192, 132, 252, 0.15)",
+        borderColor: color.border,
+        backgroundColor: color.bg,
         borderDash: [6, 4], // 室内棚と一目で区別できる点線
         borderWidth: 2.2,
         pointRadius: filteredHistory.length > 30 ? 0 : 3,
@@ -1434,7 +1622,7 @@ function updateTempChart() {
       };
     }
 
-    // 🏠 室内飼育用データセット（左軸 y・実線）
+    // 🏠 室内飼育用データセット（左軸 y・実線・カスタムカラー対応）
     return {
       label: labelName,
       data: dataPoints,
@@ -1625,6 +1813,9 @@ function renderAirconHistoryChips() {
   });
 }
 
+let isDraggingActive = false; // ドラッグ操作中のカードクリック抑止フラグ
+let draggedCardEl = null;
+
 /**
  * 温度計カードを描画
  */
@@ -1632,7 +1823,10 @@ function renderThermometerCards(meterDataList, isFresh = true) {
   let html = "";
   const timeBadge = isFresh ? "" : `<span style="font-size: 0.7rem; color: var(--accent-amber); background: rgba(245, 158, 11, 0.1); padding: 1px 5px; border-radius: 4px;">前回保存値</span>`;
 
-  meterDataList.forEach((item, index) => {
+  // 保存された並び順でソート
+  const sortedList = sortMetersByOrder(meterDataList);
+
+  sortedList.forEach((item, index) => {
     const { device, status } = item;
     const temp = status.temperature !== undefined ? status.temperature : "--";
     const humidity = status.humidity !== undefined ? status.humidity : "--";
@@ -1652,17 +1846,8 @@ function renderThermometerCards(meterDataList, isFresh = true) {
       roleBadge = "棚・下段";
     }
 
-    let color = SENSOR_COLORS[index % SENSOR_COLORS.length];
-    if (isOutdoor) {
-      color = {
-        border: "#c084fc",
-        bg: "rgba(192, 132, 252, 0.15)",
-        cardBg: "linear-gradient(145deg, rgba(192, 132, 252, 0.12) 0%, rgba(15, 23, 42, 0.85) 100%)",
-        cardBorder: "rgba(192, 132, 252, 0.4)",
-        badgeBg: "rgba(192, 132, 252, 0.2)",
-        badgeText: "#c084fc"
-      };
-    }
+    // デバイス固有カスタム色または基本パレット色
+    const color = getMeterColorConfig(device.deviceId, index);
 
     let tempColor = "var(--text-main)";
     if (typeof temp === "number") {
@@ -1694,10 +1879,12 @@ function renderThermometerCards(meterDataList, isFresh = true) {
     const bleMacFormatted = formatMacAddress(device.deviceId);
 
     html += `
-      <div class="${cardClasses.join(" ")}" data-id="${device.deviceId}" title="クリックで表示切替 (ON ➔ OFF ➔ 単独表示 ➔ 全表示)" style="background: ${color.cardBg}; border: 1.5px solid ${color.cardBorder}; box-shadow: 0 4px 14px rgba(0,0,0,0.35);">
+      <div class="${cardClasses.join(" ")}" data-id="${device.deviceId}" draggable="true" title="クリックで表示切替 (ON ➔ OFF ➔ 単独表示 ➔ 全表示) / ⠿をつまんで位置変更" style="background: ${color.cardBg}; border: 1.5px solid ${color.cardBorder}; box-shadow: 0 4px 14px rgba(0,0,0,0.35);">
+        <input type="color" class="card-color-input" data-id="${device.deviceId}" value="${color.border}" style="opacity: 0; width: 0; height: 0; position: absolute; pointer-events: none;">
         <div class="sensor-header">
-          <div class="sensor-name" style="color: #f8fafc; font-weight: 700; display: flex; align-items: center; gap: 6px;">
-            <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: ${color.border}; box-shadow: 0 0 6px ${color.border};"></span>
+          <div class="sensor-name" style="color: #f8fafc; font-weight: 700; display: flex; align-items: center; gap: 5px;">
+            <span class="drag-handle" data-id="${device.deviceId}" title="長押し・ドラッグして並び替え">⠿</span>
+            <span class="color-dot-btn" data-id="${device.deviceId}" title="クリックして色を変更" style="display: inline-block; width: 11px; height: 11px; border-radius: 50%; background-color: ${color.border}; box-shadow: 0 0 6px ${color.border}; cursor: pointer; flex-shrink: 0;"></span>
             <span class="device-name-text" title="固有BLE MAC: ${bleMacFormatted}" style="cursor: help;">${escapeHtml(device.deviceName)}</span>
             <span class="mac-info-icon" data-mac="${bleMacFormatted}" data-name="${escapeHtml(device.deviceName)}" title="固有BLE MAC: ${bleMacFormatted}" style="cursor: pointer; opacity: 0.45; font-size: 0.72rem; padding: 0 2px;">ℹ️</span>
             ${cardStateBadge}
@@ -1705,6 +1892,7 @@ function renderThermometerCards(meterDataList, isFresh = true) {
           <div style="display: flex; gap: 4px; align-items: center;">
             ${timeBadge}
             <span class="sensor-role" style="background: ${color.badgeBg}; color: ${color.badgeText}; border: 1px solid ${color.cardBorder};">${roleBadge}</span>
+            <button type="button" class="btn-color-picker" data-id="${device.deviceId}" title="カラー変更">🎨</button>
           </div>
         </div>
         <div class="temp-display">
@@ -1721,7 +1909,47 @@ function renderThermometerCards(meterDataList, isFresh = true) {
 
   elements.thermometerGrid.innerHTML = html;
 
-  // ℹ️ アイコンタップ/クリック時: カードのON/OFF切り替えイベントを抑止してBLE MACを表示
+  // 🎨 カラーピッカーボタン & ドットクリック時
+  const colorTriggers = elements.thermometerGrid.querySelectorAll(".btn-color-picker, .color-dot-btn");
+  colorTriggers.forEach(btn => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const devId = btn.dataset.id;
+      const input = elements.thermometerGrid.querySelector(`.card-color-input[data-id="${devId}"]`);
+      if (input) {
+        input.click();
+      }
+    });
+  });
+
+  // 🎨 カラーピッカー入力イベント
+  const colorInputs = elements.thermometerGrid.querySelectorAll(".card-color-input");
+  colorInputs.forEach(input => {
+    input.addEventListener("input", (e) => {
+      const devId = input.dataset.id;
+      const newHex = e.target.value;
+      appState.meterColors[devId] = newHex;
+      localStorage.setItem(STORAGE_KEYS.METER_COLORS, JSON.stringify(appState.meterColors));
+      renderThermometerCards(appState.meterDataCache, false);
+      updateTempChart();
+    });
+    input.addEventListener("change", (e) => {
+      const devId = input.dataset.id;
+      const newHex = e.target.value;
+      appState.meterColors[devId] = newHex;
+      localStorage.setItem(STORAGE_KEYS.METER_COLORS, JSON.stringify(appState.meterColors));
+      renderThermometerCards(appState.meterDataCache, false);
+      updateTempChart();
+      updateColorSettingsInModal();
+
+      logger.add("success", `温度計カラーを変更しました: [${newHex}]`, {
+        deviceId: devId,
+        colorHex: newHex
+      });
+    });
+  });
+
+  // ℹ️ アイコンタップ/クリック時
   const macIcons = elements.thermometerGrid.querySelectorAll(".mac-info-icon");
   macIcons.forEach(icon => {
     icon.addEventListener("click", (e) => {
@@ -1736,6 +1964,8 @@ function renderThermometerCards(meterDataList, isFresh = true) {
   const cards = elements.thermometerGrid.querySelectorAll(".sensor-card");
   cards.forEach(card => {
     card.addEventListener("click", () => {
+      if (isDraggingActive) return; // ドラッグ中・直後はカードクリック切替を抑制
+
       const devId = card.dataset.id;
       const dev = (appState.thermometers.find(m => m.deviceId === devId) || 
                    (appState.meterDataCache.find(m => m.device.deviceId === devId) || {}).device) || { deviceName: devId };
@@ -1781,6 +2011,106 @@ function renderThermometerCards(meterDataList, isFresh = true) {
       renderThermometerCards(appState.meterDataCache, false);
       updateTempChart();
     });
+
+    // ⠿ ドラッグ＆ドロップイベントバインド (HTML5 DnD + タッチ対応)
+    card.addEventListener("dragstart", (e) => {
+      isDraggingActive = true;
+      draggedCardEl = card;
+      card.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", card.dataset.id);
+    });
+
+    card.addEventListener("dragend", () => {
+      card.classList.remove("dragging");
+      cards.forEach(c => c.classList.remove("drag-over"));
+      draggedCardEl = null;
+      setTimeout(() => { isDraggingActive = false; }, 120);
+    });
+
+    card.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      if (draggedCardEl && draggedCardEl !== card) {
+        card.classList.add("drag-over");
+      }
+    });
+
+    card.addEventListener("dragleave", () => {
+      card.classList.remove("drag-over");
+    });
+
+    card.addEventListener("drop", (e) => {
+      e.preventDefault();
+      card.classList.remove("drag-over");
+      if (!draggedCardEl || draggedCardEl === card) return;
+
+      const grid = elements.thermometerGrid;
+      const allCards = [...grid.querySelectorAll(".sensor-card")];
+      const fromIndex = allCards.indexOf(draggedCardEl);
+      const toIndex = allCards.indexOf(card);
+
+      if (fromIndex < toIndex) {
+        grid.insertBefore(draggedCardEl, card.nextSibling);
+      } else {
+        grid.insertBefore(draggedCardEl, card);
+      }
+
+      saveCurrentCardOrder();
+    });
+
+    // 📱 スマホ・タブレット用 タッチドラッグ操作
+    const handle = card.querySelector(".drag-handle");
+    if (handle) {
+      let isTouchMoving = false;
+
+      handle.addEventListener("touchstart", (e) => {
+        isDraggingActive = true;
+        draggedCardEl = card;
+      }, { passive: true });
+
+      handle.addEventListener("touchmove", (e) => {
+        if (!draggedCardEl) return;
+        const touch = e.touches[0];
+        isTouchMoving = true;
+        draggedCardEl.classList.add("dragging");
+
+        const targetEl = document.elementFromPoint(touch.clientX, touch.clientY);
+        const targetCard = targetEl ? targetEl.closest(".sensor-card") : null;
+        cards.forEach(c => c.classList.remove("drag-over"));
+        if (targetCard && targetCard !== draggedCardEl) {
+          targetCard.classList.add("drag-over");
+        }
+      }, { passive: true });
+
+      handle.addEventListener("touchend", (e) => {
+        if (!draggedCardEl) return;
+        cards.forEach(c => c.classList.remove("drag-over", "dragging"));
+
+        if (isTouchMoving) {
+          const touch = e.changedTouches[0];
+          const targetEl = document.elementFromPoint(touch.clientX, touch.clientY);
+          const targetCard = targetEl ? targetEl.closest(".sensor-card") : null;
+
+          if (targetCard && targetCard !== draggedCardEl) {
+            const grid = elements.thermometerGrid;
+            const allCards = [...grid.querySelectorAll(".sensor-card")];
+            const fromIndex = allCards.indexOf(draggedCardEl);
+            const toIndex = allCards.indexOf(targetCard);
+            if (fromIndex < toIndex) {
+              grid.insertBefore(draggedCardEl, targetCard.nextSibling);
+            } else {
+              grid.insertBefore(draggedCardEl, targetCard);
+            }
+            saveCurrentCardOrder();
+          }
+        }
+
+        draggedCardEl = null;
+        isTouchMoving = false;
+        setTimeout(() => { isDraggingActive = false; }, 200);
+      });
+    }
   });
 }
 
