@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.0
- * 温度グラフの左右2軸（飼育室/外気温独立スケール）表示対応＆外気温センサー動的指定機能
+ * Kuwagata Room Monitor - Main Application Logic v3.0.1
+ * パスコード入力のNFKC正規化（全角７７７７対応）、送信多重発火防止＆アンロック例外ガード
  */
 
-const APP_VERSION = "v3.0";
+const APP_VERSION = "v3.0.1";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -339,21 +339,28 @@ function unlockApp() {
   if (elements.authModal) elements.authModal.classList.add("hidden");
   if (elements.appWrapper) elements.appWrapper.classList.remove("hidden");
 
-  // 前回キャッシュがあれば即描画
-  if (appState.meterDataCache && appState.meterDataCache.length > 0) {
-    renderThermometerCards(appState.meterDataCache, false);
-    elements.lastUpdated.innerHTML = `前回: <strong>${appState.lastUpdatedText}</strong> <span style="color: var(--accent-blue); font-size: 0.75rem;">(最新取得中...)</span>`;
-    updateTempChart();
-  }
+  try {
+    // 前回キャッシュがあれば即描画
+    if (appState.meterDataCache && appState.meterDataCache.length > 0) {
+      renderThermometerCards(appState.meterDataCache, false);
+      if (elements.lastUpdated) {
+        elements.lastUpdated.innerHTML = `前回: <strong>${appState.lastUpdatedText}</strong> <span style="color: var(--accent-blue); font-size: 0.75rem;">(最新取得中...)</span>`;
+      }
+      updateTempChart();
+    }
 
-  initUI();
+    initUI();
 
-  if (appState.token && appState.secret) {
-    elements.sbTokenInput.value = appState.token;
-    elements.sbSecretInput.value = appState.secret;
-    fetchDevicesAndStatus();
-  } else {
-    updateStatus("設定が必要", true);
+    if (appState.token && appState.secret) {
+      elements.sbTokenInput.value = appState.token;
+      elements.sbSecretInput.value = appState.secret;
+      fetchDevicesAndStatus();
+    } else {
+      updateStatus("設定が必要", true);
+    }
+  } catch (err) {
+    console.error("Unlock initialization error:", err);
+    logger.add("error", "アプリ起動時描画エラー: " + err.message, { stack: err.stack });
   }
 
   // 自動更新タイマー（2分おき）
@@ -387,35 +394,42 @@ function lockApp() {
 }
 
 function handleAuthSubmit(customPass = null) {
-  const pass = (customPass !== null ? customPass : (elements.authPassInput?.value || "")).trim().toLowerCase();
-  
-  if (VALID_PASSCODES.includes(pass)) {
-    localStorage.setItem(STORAGE_KEYS.AUTH_PASSED, "true");
-    sessionStorage.setItem("kuwagata_auth_passed", "true");
-    if (elements.authErrorMsg) elements.authErrorMsg.classList.add("hidden");
+  try {
+    const raw = customPass !== null ? customPass : (elements.authPassInput?.value || "");
+    // NFKC正規化（全角英数・記号を半角に自動変換）＋トリム＋小文字化
+    const pass = String(raw).normalize("NFKC").trim().toLowerCase();
     
-    logger.add("success", "セキュリティ合言葉の認証に成功しました", {
-      authPassed: true,
-      authMethod: "passcode_input",
-      passcodeMasked: pass.length > 2 ? `${pass[0]}${"*".repeat(pass.length - 2)}${pass.slice(-1)}` : "**",
-      host: window.location.host,
-      timestamp: new Date().toISOString()
-    });
-    
-    unlockApp();
-  } else {
-    if (elements.authErrorMsg) elements.authErrorMsg.classList.remove("hidden");
-    if (elements.authPassInput) {
-      elements.authPassInput.value = "";
-      elements.authPassInput.focus();
+    if (VALID_PASSCODES.includes(pass)) {
+      localStorage.setItem(STORAGE_KEYS.AUTH_PASSED, "true");
+      sessionStorage.setItem("kuwagata_auth_passed", "true");
+      if (elements.authErrorMsg) elements.authErrorMsg.classList.add("hidden");
+      
+      logger.add("success", "セキュリティ合言葉の認証に成功しました", {
+        authPassed: true,
+        authMethod: "passcode_input",
+        passcodeMasked: pass.length > 2 ? `${pass[0]}${"*".repeat(pass.length - 2)}${pass.slice(-1)}` : "**",
+        host: window.location.host,
+        timestamp: new Date().toISOString()
+      });
+      
+      unlockApp();
+    } else {
+      if (elements.authErrorMsg) elements.authErrorMsg.classList.remove("hidden");
+      if (elements.authPassInput) {
+        elements.authPassInput.value = "";
+        elements.authPassInput.focus();
+      }
+      
+      logger.add("warn", "セキュリティ合言葉の認証に失敗しました", {
+        authPassed: false,
+        inputLength: pass.length,
+        host: window.location.host,
+        timestamp: new Date().toISOString()
+      });
     }
-    
-    logger.add("warn", "セキュリティ合言葉の認証に失敗しました", {
-      authPassed: false,
-      inputLength: pass.length,
-      host: window.location.host,
-      timestamp: new Date().toISOString()
-    });
+  } catch (err) {
+    console.error("Auth submit error:", err);
+    alert("認証処理中にエラーが発生しました: " + err.message);
   }
 }
 
@@ -511,27 +525,11 @@ function updateAirconLabels() {
 }
 
 function setupEventListeners() {
-  // 🔒 認証関連イベントバインド
+  // 🔒 認証関連イベントバインド（form submit で一元化し二重送信を防止）
   if (elements.authForm) {
     elements.authForm.addEventListener("submit", (e) => {
       e.preventDefault();
       handleAuthSubmit();
-    });
-  }
-
-  if (elements.authSubmitBtn) {
-    elements.authSubmitBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      handleAuthSubmit();
-    });
-  }
-
-  if (elements.authPassInput) {
-    elements.authPassInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        handleAuthSubmit();
-      }
     });
   }
 

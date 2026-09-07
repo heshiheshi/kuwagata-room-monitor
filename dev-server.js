@@ -167,7 +167,11 @@ const server = http.createServer(async (req, res) => {
         res.end(`500 Server Error: ${err.code}`);
       }
     } else {
-      res.writeHead(200, { "Content-Type": MIME_TYPES[ext] || "application/octet-stream" });
+      res.writeHead(200, {
+        "Content-Type": MIME_TYPES[ext] || "application/octet-stream",
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache"
+      });
       res.end(content);
     }
   });
