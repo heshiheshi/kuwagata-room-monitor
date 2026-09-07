@@ -1,13 +1,25 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v2.8
- * セキュリティ強化: 画面上の合言葉ヒントの完全撤去（全環境ブラインド認証ゲート）
+ * Kuwagata Room Monitor - Main Application Logic v2.9
+ * 温度計カードの機器名ホバー/タップによる固有BLE MACアドレス（シリアルID）ツールチップ表示
  */
 
-const APP_VERSION = "v2.8";
+const APP_VERSION = "v2.9";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
 const VALID_PASSCODES = ['lojing2026', 'kuwagata2026', '7777'];
+
+/**
+ * SwitchBotの12桁deviceId（例: E9D8AF0D85F9）をBLE MAC形式（E9:D8:AF:0D:85:F9）に整形
+ */
+function formatMacAddress(id) {
+  if (!id) return "--";
+  const clean = String(id).replace(/[^a-fA-F0-9]/g, "").toUpperCase();
+  if (clean.length === 12) {
+    return clean.match(/.{1,2}/g).join(":");
+  }
+  return id;
+}
 
 // 定数 & ストレージキー
 const STORAGE_KEYS = {
@@ -1508,12 +1520,15 @@ function renderThermometerCards(meterDataList, isFresh = true) {
     if (isCardMuted) cardClasses.push("card-muted");
     if (isCardSolo) cardClasses.push("card-solo");
 
+    const bleMacFormatted = formatMacAddress(device.deviceId);
+
     html += `
       <div class="${cardClasses.join(" ")}" data-id="${device.deviceId}" title="クリックで表示切替 (ON ➔ OFF ➔ 単独表示 ➔ 全表示)" style="background: ${color.cardBg}; border: 1.5px solid ${color.cardBorder}; box-shadow: 0 4px 14px rgba(0,0,0,0.35);">
         <div class="sensor-header">
           <div class="sensor-name" style="color: #f8fafc; font-weight: 700; display: flex; align-items: center; gap: 6px;">
             <span style="display: inline-block; width: 10px; height: 10px; border-radius: 50%; background-color: ${color.border}; box-shadow: 0 0 6px ${color.border};"></span>
-            ${escapeHtml(device.deviceName)}
+            <span class="device-name-text" title="固有BLE MAC: ${bleMacFormatted}" style="cursor: help;">${escapeHtml(device.deviceName)}</span>
+            <span class="mac-info-icon" data-mac="${bleMacFormatted}" data-name="${escapeHtml(device.deviceName)}" title="固有BLE MAC: ${bleMacFormatted}" style="cursor: pointer; opacity: 0.45; font-size: 0.72rem; padding: 0 2px;">ℹ️</span>
             ${cardStateBadge}
           </div>
           <div style="display: flex; gap: 4px; align-items: center;">
@@ -1534,6 +1549,17 @@ function renderThermometerCards(meterDataList, isFresh = true) {
   });
 
   elements.thermometerGrid.innerHTML = html;
+
+  // ℹ️ アイコンタップ/クリック時: カードのON/OFF切り替えイベントを抑止してBLE MACを表示
+  const macIcons = elements.thermometerGrid.querySelectorAll(".mac-info-icon");
+  macIcons.forEach(icon => {
+    icon.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const mac = icon.dataset.mac;
+      const name = icon.dataset.name;
+      alert(`【${name}】\n固有BLE MAC: ${mac}\n（※物理ハードウェア固有の識別番号です）`);
+    });
+  });
 
   // 🖱️ 案B：カードクリックによる3段階ステート循環 (ON ➔ OFF ➔ 単独表示 ➔ 全表示)
   const cards = elements.thermometerGrid.querySelectorAll(".sensor-card");
