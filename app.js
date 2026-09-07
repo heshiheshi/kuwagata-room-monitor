@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.0.1
- * パスコード入力のNFKC正規化（全角７７７７対応）、送信多重発火防止＆アンロック例外ガード
+ * Kuwagata Room Monitor - Main Application Logic v3.0.2
+ * 状態変数（airconEvents）の初期化復元、パスコードコピペ時の不可視文字完全除去
  */
 
-const APP_VERSION = "v3.0.1";
+const APP_VERSION = "v3.0.2";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -155,6 +155,9 @@ if (isNaN(savedChartMin)) savedChartMin = 15.0;
 
 let savedChartMax = parseFloat(localStorage.getItem(STORAGE_KEYS.CHART_MAX));
 if (isNaN(savedChartMax)) savedChartMax = 18.0;
+
+let airconEvents = [];
+try { airconEvents = JSON.parse(localStorage.getItem(STORAGE_KEYS.AIRCON_EVENTS) || "[]"); } catch (e) {}
 
 let savedOutdoorMeterId = localStorage.getItem(STORAGE_KEYS.OUTDOOR_METER_ID);
 if (savedOutdoorMeterId === null) {
@@ -393,11 +396,17 @@ function lockApp() {
   if (elements.authErrorMsg) elements.authErrorMsg.classList.add("hidden");
 }
 
+let isSubmittingAuth = false;
+
 function handleAuthSubmit(customPass = null) {
+  if (isSubmittingAuth) return;
+  isSubmittingAuth = true;
+  setTimeout(() => { isSubmittingAuth = false; }, 800);
+
   try {
     const raw = customPass !== null ? customPass : (elements.authPassInput?.value || "");
-    // NFKC正規化（全角英数・記号を半角に自動変換）＋トリム＋小文字化
-    const pass = String(raw).normalize("NFKC").trim().toLowerCase();
+    // NFKC正規化（全角英数・記号を半角に自動変換）＋あらゆる空白・改行・不可視文字（ゼロ幅スペース等）を完全除去＋小文字化
+    const pass = String(raw).normalize("NFKC").replace(/[\s\u200B-\u200D\uFEFF]/g, "").toLowerCase();
     
     if (VALID_PASSCODES.includes(pass)) {
       localStorage.setItem(STORAGE_KEYS.AUTH_PASSED, "true");
@@ -430,6 +439,8 @@ function handleAuthSubmit(customPass = null) {
   } catch (err) {
     console.error("Auth submit error:", err);
     alert("認証処理中にエラーが発生しました: " + err.message);
+  } finally {
+    isSubmittingAuth = false;
   }
 }
 
