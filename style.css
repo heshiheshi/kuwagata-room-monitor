@@ -1099,4 +1099,26 @@ body.force-portrait .shutter-buttons .btn {
   color: #fff;
 }
 
+/* ☁️ クラウド同期バッジ & CSVボタン */
+.status-badge.sync-active {
+  border-color: #38bdf8 !important;
+  color: #38bdf8 !important;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.35);
+}
+.status-badge.sync-error {
+  border-color: #f43f5e !important;
+  color: #f43f5e !important;
+}
+#btnExportCsv {
+  transition: all 0.2s ease;
+  cursor: pointer;
+}
+#btnExportCsv:hover {
+  background: rgba(56, 189, 248, 0.25) !important;
+  color: #fff !important;
+  border-color: #38bdf8 !important;
+  transform: translateY(-1px);
+}
+
+
 

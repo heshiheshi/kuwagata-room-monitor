@@ -1,6 +1,12 @@
 /**
- * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー
+ * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.2.0
  * 外部npmパッケージ不要（Node.js標準機能のみで動作）
+ * 
+ * 機能:
+ * - 静的ファイル配信 (index.html, app.js, style.css)
+ * - SwitchBot Open API プロキシ (/api/switchbot)
+ * - クラウド設定共有エミュレーション (/api/sync/config)
+ * - 温度履歴蓄積エミュレーション (/api/sync/history)
  */
 
 import http from "node:http";
@@ -15,6 +21,27 @@ const __dirname = path.dirname(__filename);
 
 const PORT = 8788;
 const PUBLIC_DIR = __dirname;
+const DEV_KV_FILE = path.join(__dirname, ".dev-kv.json");
+
+// ローカルKVストアの読み書き
+function readDevKv() {
+  try {
+    if (fs.existsSync(DEV_KV_FILE)) {
+      return JSON.parse(fs.readFileSync(DEV_KV_FILE, "utf-8"));
+    }
+  } catch (e) {
+    console.error("Failed to read .dev-kv.json:", e);
+  }
+  return { sharedConfig: null, tempHistory: [], botConfig: null };
+}
+
+function writeDevKv(data) {
+  try {
+    fs.writeFileSync(DEV_KV_FILE, JSON.stringify(data, null, 2), "utf-8");
+  } catch (e) {
+    console.error("Failed to write .dev-kv.json:", e);
+  }
+}
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -92,7 +119,7 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // --- API Routes ---
+  // --- 1. SwitchBot API Routes ---
   if (pathname === "/api/switchbot") {
     const token = req.headers["x-switchbot-token"];
     const secret = req.headers["x-switchbot-secret"];
@@ -153,6 +180,80 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // --- 2. クラウド設定共有 API エミュレーション (/api/sync/config) ---
+  if (pathname === "/api/sync/config") {
+    const kv = readDevKv();
+
+    if (req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, config: kv.sharedConfig }));
+      return;
+    } else if (req.method === "POST") {
+      let bodyStr = "";
+      req.on("data", chunk => bodyStr += chunk);
+      req.on("end", () => {
+        try {
+          const body = JSON.parse(bodyStr);
+          if (body.config) {
+            body.config.updatedAt = Date.now();
+            kv.sharedConfig = body.config;
+          }
+          if (body.credentials) {
+            kv.botConfig = {
+              token: body.credentials.token,
+              secret: body.credentials.secret,
+              devices: body.devices || [],
+              updatedAt: Date.now()
+            };
+          }
+          writeDevKv(kv);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, message: "ローカルKVに保存しました" }));
+        } catch (e) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+      });
+      return;
+    }
+  }
+
+  // --- 3. 温度履歴蓄積 API エミュレーション (/api/sync/history) ---
+  if (pathname === "/api/sync/history") {
+    const kv = readDevKv();
+
+    if (req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ success: true, history: kv.tempHistory || [] }));
+      return;
+    } else if (req.method === "POST") {
+      let bodyStr = "";
+      req.on("data", chunk => bodyStr += chunk);
+      req.on("end", () => {
+        try {
+          const body = JSON.parse(bodyStr);
+          if (body.entry && body.entry.readings) {
+            kv.tempHistory = kv.tempHistory || [];
+            const last = kv.tempHistory[kv.tempHistory.length - 1];
+            if (!last || (body.entry.time - last.time) >= 180000) {
+              kv.tempHistory.push(body.entry);
+              if (kv.tempHistory.length > 1008) {
+                kv.tempHistory = kv.tempHistory.slice(-1008);
+              }
+              writeDevKv(kv);
+            }
+          }
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, count: (kv.tempHistory || []).length }));
+        } catch (e) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+      });
+      return;
+    }
+  }
+
   // --- 静的ファイル配信 ---
   let filePath = path.join(PUBLIC_DIR, pathname === "/" ? "index.html" : pathname);
   const ext = path.extname(filePath).toLowerCase();
@@ -178,5 +279,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`🚀 Kuwagata Room Monitor Dev Server running at http://localhost:${PORT}`);
+  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.2.0 running at http://localhost:${PORT}`);
 });

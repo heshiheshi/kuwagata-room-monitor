@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.1.0
- * 温度計カードのドラッグ＆ドロップ並び替え（位置変更）＆各温度計のカラーカスタマイズ機能
+ * Kuwagata Room Monitor - Main Application Logic v3.2.0
+ * Cloudflare KV クラウド共有（並び順・色・外気温設定）、Cron無人24時間自動蓄積、および内外温度差CSVエクスポート機能
  */
 
-const APP_VERSION = "v3.1.0";
+const APP_VERSION = "v3.2.0";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -40,7 +40,8 @@ const STORAGE_KEYS = {
   CHART_MAX: "kuwagata_chart_max_temp",
   OUTDOOR_METER_ID: "kuwagata_outdoor_meter_id", // 外気温センサーdeviceId
   METER_ORDER: "kuwagata_meter_order",           // 温度計カードの並び順 (deviceId配列)
-  METER_COLORS: "kuwagata_meter_colors"          // 各温度計のカスタム色マッピング { [deviceId]: "#hex" }
+  METER_COLORS: "kuwagata_meter_colors",         // 各温度計のカスタム色マッピング { [deviceId]: "#hex" }
+  LAST_CLOUD_SYNC: "kuwagata_last_cloud_sync"    // 最終クラウド同期時刻
 };
 
 const MODE_NAMES = { "1": "自動", "2": "冷房", "3": "除湿", "4": "送風", "5": "暖房" };
@@ -282,6 +283,14 @@ const elements = {
   meterColorSettingsList: document.getElementById("meterColorSettingsList"),
   btnResetMeterOrder: document.getElementById("btnResetMeterOrder"),
 
+  // ☁️ クラウド同期 & 履歴CSV出力要素
+  cloudSyncBadge: document.getElementById("cloudSyncBadge"),
+  cloudSyncText: document.getElementById("cloudSyncText"),
+  btnExportCsv: document.getElementById("btnExportCsv"),
+  btnModalExportCsv: document.getElementById("btnModalExportCsv"),
+  btnSyncPush: document.getElementById("btnSyncPush"),
+  btnSyncPull: document.getElementById("btnSyncPull"),
+
   // 💬 エアコン送信イベント詳細ツールチップ & 履歴チップ
   airconEventTooltip: document.getElementById("airconEventTooltip"),
   closeAirconTooltipBtn: document.getElementById("closeAirconTooltipBtn"),
@@ -354,6 +363,10 @@ window.addEventListener("DOMContentLoaded", () => {
   applyOrientationMode(appState.orientationMode);
   initAirconUI();
   initTempChart();
+
+  // ☁️ クラウド共有設定 & 24時間温度履歴の自動取得
+  fetchSharedConfig();
+  fetchCloudTempHistory();
 });
 
 function initLocalhostDebugMode() {
@@ -733,8 +746,23 @@ function setupEventListeners() {
       updateTempChart();
       updateColorSettingsInModal();
       logger.add("info", "温度計カード並び順を初期状態にリセットしました");
+      debouncedSyncConfigToCloud();
       alert("並び順を初期状態に戻しました。");
     });
+  }
+
+  // ☁️ クラウド同期手動実行 & CSVエクスポート
+  if (elements.btnSyncPush) {
+    elements.btnSyncPush.addEventListener("click", () => syncConfigToCloud(true));
+  }
+  if (elements.btnSyncPull) {
+    elements.btnSyncPull.addEventListener("click", () => fetchSharedConfig(true));
+  }
+  if (elements.btnExportCsv) {
+    elements.btnExportCsv.addEventListener("click", exportTempHistoryCsv);
+  }
+  if (elements.btnModalExportCsv) {
+    elements.btnModalExportCsv.addEventListener("click", exportTempHistoryCsv);
   }
 
   elements.btnSaveApiKeys.addEventListener("click", () => {
@@ -753,7 +781,10 @@ function setupEventListeners() {
       secretLength: secret.length,
       storageKey: STORAGE_KEYS.TOKEN
     });
-    alert("APIキーをブラウザに保存しました。");
+
+    // クラウド側(KV)にも保存し、Cron定期記録を有効化
+    syncConfigToCloud(false);
+    alert("APIキーを保存しました（クラウド定期記録用にも同期されました）。");
   });
 
   // グラフ目盛り設定の保存
@@ -787,6 +818,7 @@ function setupEventListeners() {
         suggestedMax: maxVal
       });
 
+      debouncedSyncConfigToCloud();
       alert(`グラフ目盛りを「${minVal}℃ 〜 ${maxVal}℃」に設定しました。`);
     });
   }
@@ -812,6 +844,8 @@ function setupEventListeners() {
         outdoorMeterId: newMeterId || "なし",
         outdoorMeterMac: formatMacAddress(newMeterId)
       });
+
+      debouncedSyncConfigToCloud();
     });
   }
 
@@ -890,6 +924,331 @@ function sortMetersByOrder(meters) {
 }
 
 /**
+ * ☁️ クラウド同期ステータスUIの更新
+ */
+function updateCloudSyncStatus(status, text) {
+  if (!elements.cloudSyncBadge || !elements.cloudSyncText) return;
+  elements.cloudSyncBadge.classList.remove("sync-active", "sync-error");
+
+  if (status === "syncing") {
+    elements.cloudSyncBadge.classList.add("sync-active");
+    elements.cloudSyncText.textContent = text || "同期中...";
+  } else if (status === "error") {
+    elements.cloudSyncBadge.classList.add("sync-error");
+    elements.cloudSyncText.textContent = text || "同期エラー";
+  } else if (status === "success") {
+    elements.cloudSyncText.textContent = text || "同期完了";
+  } else {
+    elements.cloudSyncText.textContent = text || "クラウド同期";
+  }
+}
+
+let syncDebounceTimer = null;
+function debouncedSyncConfigToCloud() {
+  if (syncDebounceTimer) clearTimeout(syncDebounceTimer);
+  syncDebounceTimer = setTimeout(() => {
+    syncConfigToCloud(false);
+  }, 1200);
+}
+
+/**
+ * ☁️ 現在のローカル設定（並び順・色・外気温設定・目盛り）および認証キーをCloudflare KVに保存
+ */
+async function syncConfigToCloud(isManual = false) {
+  updateCloudSyncStatus("syncing", "クラウド保存中...");
+
+  const payload = {
+    config: {
+      meterOrder: appState.meterOrder || [],
+      meterColors: appState.meterColors || {},
+      outdoorMeterId: appState.outdoorMeterId || "",
+      chartMinTemp: appState.chartMinTemp,
+      chartMaxTemp: appState.chartMaxTemp
+    },
+    credentials: {
+      token: appState.token || "",
+      secret: appState.secret || ""
+    },
+    devices: appState.devices || []
+  };
+
+  try {
+    const res = await fetch("/api/sync/config", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-switchbot-token": appState.token || "",
+        "x-switchbot-secret": appState.secret || ""
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (data && data.success) {
+      updateCloudSyncStatus("success", "同期完了");
+      localStorage.setItem(STORAGE_KEYS.LAST_CLOUD_SYNC, Date.now().toString());
+      logger.add("success", "設定をクラウド(KV)へ保存しました", {
+        meterOrderCount: (payload.config.meterOrder || []).length,
+        colorsCount: Object.keys(payload.config.meterColors || {}).length,
+        outdoorMeterId: payload.config.outdoorMeterId || "none"
+      });
+      if (isManual) {
+        alert("現在の設定（並び順・色・外気温指定など）をクラウドに保存しました。\nパートナー様の端末でも自動共有されます。");
+      }
+    } else {
+      updateCloudSyncStatus("error", "保存失敗");
+      logger.add("warn", "クラウドへの設定保存に応答エラーがありました", data);
+      if (isManual) alert("クラウド保存に失敗しました: " + (data && data.error ? data.error : "不明なエラー"));
+    }
+  } catch (err) {
+    updateCloudSyncStatus("error", "通信エラー");
+    logger.add("error", "クラウド同期通信に失敗しました: " + err.message);
+    if (isManual) alert("通信エラーが発生しました: " + err.message);
+  }
+}
+
+/**
+ * ☁️ Cloudflare KVから共有設定（並び順・色・外気温設定・目盛り）を取得してUIに反映
+ */
+async function fetchSharedConfig(isManual = false) {
+  updateCloudSyncStatus("syncing", "設定読込中...");
+
+  try {
+    const res = await fetch("/api/sync/config", {
+      headers: {
+        "x-switchbot-token": appState.token || "",
+        "x-switchbot-secret": appState.secret || ""
+      }
+    });
+
+    const data = await res.json();
+    if (data && data.success && data.config) {
+      const cfg = data.config;
+      let changed = false;
+
+      if (Array.isArray(cfg.meterOrder) && cfg.meterOrder.length > 0) {
+        appState.meterOrder = cfg.meterOrder;
+        localStorage.setItem(STORAGE_KEYS.METER_ORDER, JSON.stringify(cfg.meterOrder));
+        changed = true;
+      }
+
+      if (cfg.meterColors && typeof cfg.meterColors === "object") {
+        appState.meterColors = cfg.meterColors;
+        localStorage.setItem(STORAGE_KEYS.METER_COLORS, JSON.stringify(cfg.meterColors));
+        changed = true;
+      }
+
+      if (cfg.outdoorMeterId !== undefined) {
+        appState.outdoorMeterId = cfg.outdoorMeterId;
+        if (cfg.outdoorMeterId) {
+          localStorage.setItem(STORAGE_KEYS.OUTDOOR_METER_ID, cfg.outdoorMeterId);
+        } else {
+          localStorage.removeItem(STORAGE_KEYS.OUTDOOR_METER_ID);
+        }
+        changed = true;
+      }
+
+      if (typeof cfg.chartMinTemp === "number" && typeof cfg.chartMaxTemp === "number") {
+        appState.chartMinTemp = cfg.chartMinTemp;
+        appState.chartMaxTemp = cfg.chartMaxTemp;
+        localStorage.setItem(STORAGE_KEYS.CHART_MIN, cfg.chartMinTemp.toString());
+        localStorage.setItem(STORAGE_KEYS.CHART_MAX, cfg.chartMaxTemp.toString());
+        if (elements.chartMinTempInput) elements.chartMinTempInput.value = cfg.chartMinTemp;
+        if (elements.chartMaxTempInput) elements.chartMaxTempInput.value = cfg.chartMaxTemp;
+        if (appState.chartInstance && appState.chartInstance.options.scales.y) {
+          appState.chartInstance.options.scales.y.suggestedMin = cfg.chartMinTemp;
+          appState.chartInstance.options.scales.y.suggestedMax = cfg.chartMaxTemp;
+        }
+        changed = true;
+      }
+
+      if (changed) {
+        updateOutdoorMeterSettingsUI();
+        updateColorSettingsInModal();
+        if (appState.meterDataCache && appState.meterDataCache.length > 0) {
+          renderThermometerCards(appState.meterDataCache, false);
+        }
+        updateTempChart();
+      }
+
+      updateCloudSyncStatus("success", "同期完了");
+      logger.add("success", "クラウド(KV)から共有設定を読み込み反映しました", cfg);
+      if (isManual) {
+        alert("クラウドから最新の共有設定を読み込み、画面に反映しました。");
+      }
+    } else {
+      updateCloudSyncStatus("idle", "クラウド同期");
+      if (isManual) alert("クラウドに保存された共有設定がまだありません。");
+    }
+  } catch (err) {
+    updateCloudSyncStatus("error", "読込失敗");
+    logger.add("warn", "クラウド設定の取得をスキップしました: " + err.message);
+  }
+}
+
+/**
+ * ☁️ Cloudflare KVから24時間蓄積された温度履歴を取得・ローカルと統合
+ */
+async function fetchCloudTempHistory() {
+  try {
+    const res = await fetch("/api/sync/history", {
+      headers: {
+        "x-switchbot-token": appState.token || "",
+        "x-switchbot-secret": appState.secret || ""
+      }
+    });
+
+    const data = await res.json();
+    if (data && data.success && Array.isArray(data.history) && data.history.length > 0) {
+      const timeMap = new Map();
+
+      // ローカル履歴をマップに登録
+      (appState.tempHistory || []).forEach(h => {
+        const key = h.ts || h.time;
+        if (key) timeMap.set(key, h);
+      });
+
+      // クラウド履歴をマージ（重複はタイムスタンプで一意化）
+      data.history.forEach(h => {
+        const key = h.ts || h.time;
+        if (key) {
+          timeMap.set(key, { ...(timeMap.get(key) || {}), ...h, ts: key, time: key });
+        }
+      });
+
+      const merged = Array.from(timeMap.values()).sort((a, b) => (a.ts || a.time) - (b.ts || b.time));
+      appState.tempHistory = merged.slice(-1008); // 直近7日分保持
+      localStorage.setItem(STORAGE_KEYS.TEMP_HISTORY, JSON.stringify(appState.tempHistory));
+
+      updateTempChart();
+      logger.add("success", `クラウドから温度履歴を取得・統合しました (${data.history.length}件)`, {
+        totalMergedRecords: appState.tempHistory.length
+      });
+    }
+  } catch (err) {
+    logger.add("warn", "クラウド温度履歴の取得をスキップしました: " + err.message);
+  }
+}
+
+/**
+ * 📊 内外温度差分析用 CSVエクスポート機能
+ */
+function exportTempHistoryCsv() {
+  if (!appState.tempHistory || appState.tempHistory.length === 0) {
+    alert("エクスポート可能な温度履歴データがまだありません。");
+    return;
+  }
+
+  // 表示対象の温度計一覧を特定（並び順を尊重）
+  let meters = (appState.thermometers && appState.thermometers.length > 0) 
+    ? appState.thermometers 
+    : (appState.meterDataCache || []).map(m => m.device);
+
+  if (!meters || meters.length === 0) {
+    const foundIds = new Set();
+    appState.tempHistory.forEach(h => {
+      if (h.readings) {
+        Object.keys(h.readings).forEach(id => foundIds.add(id));
+      }
+    });
+    meters = Array.from(foundIds).map(id => ({ deviceId: id, deviceName: id }));
+  }
+
+  meters = sortMetersByOrder(meters);
+
+  const outdoorId = appState.outdoorMeterId;
+  const outdoorMeter = meters.find(m => m.deviceId === outdoorId);
+
+  // CSVヘッダーの生成
+  const headerCols = ["日時", "タイムスタンプ(ms)"];
+
+  meters.forEach(meter => {
+    const isOutdoor = (meter.deviceId === outdoorId);
+    const prefix = isOutdoor ? `[外気] ${meter.deviceName}` : meter.deviceName;
+    headerCols.push(`"${prefix} 温度(℃)"`);
+    headerCols.push(`"${prefix} 湿度(%)"`);
+  });
+
+  // 外気温センサーが存在する場合、内外温度差（各室内棚 - 外気）の列を追加
+  if (outdoorMeter) {
+    meters.forEach(meter => {
+      if (meter.deviceId !== outdoorId) {
+        headerCols.push(`"内外温度差 [${meter.deviceName} - 外気](℃)"`);
+      }
+    });
+  }
+
+  const csvRows = [headerCols.join(",")];
+
+  // データ行の生成
+  appState.tempHistory.forEach(record => {
+    const epoch = record.ts || record.time || 0;
+    const d = new Date(epoch);
+    const dateStr = !isNaN(d.getTime()) 
+      ? `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
+      : record.label || "--";
+
+    const row = [`"${dateStr}"`, epoch];
+
+    let outdoorTemp = null;
+    if (outdoorId && record.readings && record.readings[outdoorId]) {
+      const oReading = record.readings[outdoorId];
+      outdoorTemp = typeof oReading.temp === "number" ? oReading.temp : null;
+    }
+
+    meters.forEach(meter => {
+      const r = record.readings ? record.readings[meter.deviceId] : null;
+      const t = (r && typeof r.temp === "number") ? r.temp : "";
+      const h = (r && typeof r.humidity === "number") ? r.humidity : "";
+      row.push(t);
+      row.push(h);
+    });
+
+    // 内外温度差の算出
+    if (outdoorMeter) {
+      meters.forEach(meter => {
+        if (meter.deviceId !== outdoorId) {
+          const r = record.readings ? record.readings[meter.deviceId] : null;
+          const indoorTemp = (r && typeof r.temp === "number") ? r.temp : null;
+          if (indoorTemp !== null && outdoorTemp !== null) {
+            const diff = (indoorTemp - outdoorTemp).toFixed(2);
+            row.push(diff);
+          } else {
+            row.push("");
+          }
+        }
+      });
+    }
+
+    csvRows.push(row.join(","));
+  });
+
+  // UTF-8 BOM付きCSVを作成（Excelで日本語が文字化けしない対策）
+  const csvContent = "\uFEFF" + csvRows.join("\r\n");
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+
+  const now = new Date();
+  const fileDate = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  const filename = `kuwagata_temp_history_${fileDate}.csv`;
+
+  const link = document.createElement("a");
+  link.setAttribute("href", url);
+  link.setAttribute("download", filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+
+  logger.add("success", `内外温度差分析用CSVをダウンロードしました: [${filename}]`, {
+    filename: filename,
+    recordsCount: appState.tempHistory.length,
+    metersCount: meters.length,
+    hasOutdoorSensor: !!outdoorMeter
+  });
+}
+
+/**
  * 現在のDOMカード並び順をlocalStorageに保存
  */
 function saveCurrentCardOrder() {
@@ -910,6 +1269,9 @@ function saveCurrentCardOrder() {
   logger.add("info", "温度計カードの位置（並び順）を保存しました", {
     newOrder: newOrder
   });
+
+  // ☁️ クラウドへ自動同期
+  debouncedSyncConfigToCloud();
 }
 
 /**
@@ -970,6 +1332,7 @@ function updateColorSettingsInModal() {
       renderThermometerCards(appState.meterDataCache, false);
       updateTempChart();
       logger.add("success", `温度計カラーを変更しました: [${color}]`, { deviceId: devId, color: color });
+      debouncedSyncConfigToCloud();
     });
   });
 
@@ -986,6 +1349,7 @@ function updateColorSettingsInModal() {
     input.addEventListener("change", (e) => {
       updateColorSettingsInModal();
       logger.add("success", `温度計カスタムカラーを保存しました: [${e.target.value}]`, { deviceId: input.dataset.id, color: e.target.value });
+      debouncedSyncConfigToCloud();
     });
   });
 }
@@ -1135,6 +1499,9 @@ async function fetchDevicesAndStatus() {
     renderDeviceListModal(deviceList, infraredRemoteList);
     renderCameraCards(appState.cameras);
 
+    // ☁️ デバイス一覧情報をクラウド(KV)へ同期（Cron自動記録用）
+    syncConfigToCloud(false);
+
     await refreshThermometers();
     updateStatus("オンライン (正常)", false);
   } catch (err) {
@@ -1222,6 +1589,7 @@ function recordTempHistory(results, timestampDate) {
 
   const record = {
     ts: timeEpoch,
+    time: timeEpoch,
     label: timeLabel,
     readings: {}
   };
@@ -1230,6 +1598,7 @@ function recordTempHistory(results, timestampDate) {
     if (typeof r.status.temperature === "number") {
       record.readings[r.device.deviceId] = {
         temp: r.status.temperature,
+        humidity: typeof r.status.humidity === "number" ? r.status.humidity : null,
         name: r.device.deviceName
       };
     }
@@ -1237,12 +1606,25 @@ function recordTempHistory(results, timestampDate) {
 
   appState.tempHistory.push(record);
 
-  // 最大500件まで保持（古いものは自動削除）
-  if (appState.tempHistory.length > 500) {
+  // 最大1008件まで保持（直近7日分: 10分おき = 1日144件 x 7日）
+  if (appState.tempHistory.length > 1008) {
     appState.tempHistory.shift();
   }
 
   localStorage.setItem(STORAGE_KEYS.TEMP_HISTORY, JSON.stringify(appState.tempHistory));
+
+  // ☁️ クラウドへ最新測定値を非同期送信（バックグラウンド）
+  try {
+    fetch("/api/sync/history", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-switchbot-token": appState.token || "",
+        "x-switchbot-secret": appState.secret || ""
+      },
+      body: JSON.stringify({ entry: record })
+    }).catch(() => {});
+  } catch (e) {}
 }
 
 /**
@@ -1946,6 +2328,8 @@ function renderThermometerCards(meterDataList, isFresh = true) {
         deviceId: devId,
         colorHex: newHex
       });
+
+      debouncedSyncConfigToCloud();
     });
   });
 

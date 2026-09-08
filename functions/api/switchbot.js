@@ -81,7 +81,7 @@ export async function onRequestPost(context) {
 /**
  * SwitchBot API v1.1 呼び出しヘルパー
  */
-async function callSwitchBotApi(path, method, token, secret, body = null) {
+export async function callSwitchBotApi(path, method, token, secret, body = null) {
   const t = Date.now().toString();
   const nonce = crypto.randomUUID();
   const sign = await generateSignature(token, secret, t, nonce);
@@ -111,7 +111,7 @@ async function callSwitchBotApi(path, method, token, secret, body = null) {
 /**
  * SwitchBot Open API v1.1 HMAC-SHA256 署名生成
  */
-async function generateSignature(token, secret, t, nonce) {
+export async function generateSignature(token, secret, t, nonce) {
   const data = token + t + nonce;
   const encoder = new TextEncoder();
   const key = await crypto.subtle.importKey(
@@ -130,7 +130,7 @@ async function generateSignature(token, secret, t, nonce) {
   return btoa(binary);
 }
 
-function jsonResponse(data, status = 200) {
+export function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
     headers: {

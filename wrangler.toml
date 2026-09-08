@@ -5,3 +5,10 @@ compatibility_date = "2024-09-01"
 [assets]
 directory = "./"
 not_found_handling = "single-page-application"
+
+[[kv_namespaces]]
+binding = "KUWAGATA_KV"
+id = "02332652fb154337bd94117bced86648"
+
+[triggers]
+crons = ["*/10 * * * *"]

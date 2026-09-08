@@ -18,7 +18,7 @@
     <div class="auth-card">
       <div class="auth-icon">🪲</div>
       <h2>クワガタ飼育室 環境監視</h2>
-      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.1.0 Security Gate</div>
+      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.2.0 Security Gate</div>
       <p class="auth-desc">セキュリティ保護されています。<br>合言葉（パスコード）を入力してください。</p>
       
       <form id="authForm">
@@ -39,7 +39,7 @@
         <span class="brand-icon">🪲</span>
         <div>
           <h1>クワガタ飼育室 環境監視</h1>
-          <div class="app-sub-title">Kuwagata Room Monitor v3.1.0</div>
+          <div class="app-sub-title">Kuwagata Room Monitor v3.2.0</div>
         </div>
       </div>
       <div class="header-actions">
@@ -48,6 +48,12 @@
           <span id="orientationIcon">🔄</span>
           <span id="orientationLabel">自動</span>
         </button>
+
+        <!-- ☁️ クラウド同期ステータス -->
+        <div id="cloudSyncBadge" class="status-badge" style="background: rgba(14, 165, 233, 0.12); border-color: rgba(14, 165, 233, 0.35); font-size: 0.75rem;" title="Cloudflare KV クラウド同期状態">
+          <span style="font-size: 0.8rem;">☁️</span>
+          <span id="cloudSyncText">クラウド同期</span>
+        </div>
 
         <div id="connectionStatus" class="status-badge">
           <span class="pulse-dot"></span>
@@ -90,12 +96,13 @@
             <span>📈 飼育室 温度推移グラフ (4箇所同時比較)</span>
             <span style="font-size: 0.72rem; background: rgba(16, 185, 129, 0.12); color: var(--accent-green); padding: 2px 6px; border-radius: 4px; font-weight: 600;">適温 15-18℃</span>
           </div>
-          <!-- 期間切り替えボタン -->
-          <div class="graph-period-buttons" style="display: flex; gap: 4px;">
+          <!-- 期間切り替えボタン & CSV出力 -->
+          <div class="graph-period-buttons" style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap;">
             <button type="button" class="btn btn-period active" data-hours="1" style="padding: 2px 8px; font-size: 0.75rem;">1時間</button>
             <button type="button" class="btn btn-period" data-hours="6" style="padding: 2px 8px; font-size: 0.75rem;">6時間</button>
             <button type="button" class="btn btn-period" data-hours="24" style="padding: 2px 8px; font-size: 0.75rem;">24時間</button>
             <button type="button" class="btn btn-period" data-hours="0" style="padding: 2px 8px; font-size: 0.75rem;">すべて</button>
+            <button type="button" id="btnExportCsv" class="btn" style="padding: 2px 8px; font-size: 0.75rem; background: rgba(56, 189, 248, 0.12); color: var(--accent-blue); border: 1px solid rgba(56, 189, 248, 0.35); margin-left: 6px;" title="外気と室内の温度差分析用CSVデータをダウンロード">📊 CSV出力</button>
           </div>
         </div>
         <div class="graph-card" style="position: relative; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 14px; padding: 16px; box-shadow: 0 4px 12px rgba(0,0,0,0.25);">
@@ -360,6 +367,22 @@
         </div>
       </div>
 
+      <!-- ☁️ クラウド同期 (KV) & 履歴エクスポート -->
+      <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+        <h4 style="font-size: 0.95rem; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between;">
+          <span>☁️ クラウド同期 (KV) & 履歴データ</span>
+          <span style="font-size: 0.72rem; color: var(--accent-blue); background: rgba(56, 189, 248, 0.12); padding: 1px 6px; border-radius: 4px; font-weight: 600;">全端末自動共有</span>
+        </h4>
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 10px;">
+          カードの並び順・色・外気温設定はCloudflare KVを通じてパートナー様とリアルタイム共有されます。また、10分おきの定期自動記録による温度推移データはCSV形式でいつでもダウンロード可能です。
+        </p>
+        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button type="button" id="btnSyncPush" class="btn" style="flex: 1; min-width: 130px; font-size: 0.8rem;">☁️ クラウドに即時保存</button>
+          <button type="button" id="btnSyncPull" class="btn" style="flex: 1; min-width: 130px; font-size: 0.8rem;">🔄 クラウドから再読込</button>
+          <button type="button" id="btnModalExportCsv" class="btn btn-primary" style="flex: 1; min-width: 130px; font-size: 0.8rem;">📊 CSVダウンロード</button>
+        </div>
+      </div>
+
       <!-- 📷 API対応カメラ情報セクション -->
       <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
         <details style="font-size: 0.8rem; color: var(--text-muted); background: var(--bg-primary); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color);">
@@ -408,6 +431,6 @@
     <span class="fab-label">localhost</span>
   </button>
 
-  <script src="app.js?v=3.1.0"></script>
+  <script src="app.js?v=3.2.0"></script>
 </body>
 </html>
