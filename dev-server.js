@@ -1,12 +1,13 @@
 /**
- * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.2.0
+ * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.2.2
  * 外部npmパッケージ不要（Node.js標準機能のみで動作）
  * 
  * 機能:
  * - 静的ファイル配信 (index.html, app.js, style.css)
  * - SwitchBot Open API プロキシ (/api/switchbot)
  * - クラウド設定共有エミュレーション (/api/sync/config)
- * - 温度履歴蓄積エミュレーション (/api/sync/history)
+ * - 温度履歴蓄積エミュレーション (/api/sync/history) - 30分間隔対応
+ * - 24時間無人記録ステータス確認エミュレーション (/api/sync/status)
  */
 
 import http from "node:http";
@@ -235,7 +236,9 @@ const server = http.createServer(async (req, res) => {
           if (body.entry && body.entry.readings) {
             kv.tempHistory = kv.tempHistory || [];
             const last = kv.tempHistory[kv.tempHistory.length - 1];
-            if (!last || (body.entry.time - last.time) >= 180000) {
+            const lastTime = last ? (last.ts || last.time || 0) : 0;
+            const entryTime = body.entry.ts || body.entry.time || Date.now();
+            if (!last || (entryTime - lastTime) >= 1500000) { // 25分以上
               kv.tempHistory.push(body.entry);
               if (kv.tempHistory.length > 1008) {
                 kv.tempHistory = kv.tempHistory.slice(-1008);
@@ -252,6 +255,27 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+  }
+
+  // --- 4. 24時間無人記録ステータス確認 API エミュレーション (/api/sync/status) ---
+  if (pathname === "/api/sync/status") {
+    const kv = readDevKv();
+    const history = kv.tempHistory || [];
+    const lastEntry = history.length > 0 ? history[history.length - 1] : null;
+
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({
+      success: true,
+      intervalMinutes: 30,
+      cronSchedule: "30分おき (*/30 * * * *)",
+      hasCredentials: !!(kv.botConfig && kv.botConfig.token && kv.botConfig.secret),
+      deviceCount: (kv.botConfig && kv.botConfig.devices) ? kv.botConfig.devices.length : 0,
+      totalRecords: history.length,
+      lastRecordedAt: lastEntry ? (lastEntry.ts || lastEntry.time) : null,
+      lastRecordedLabel: lastEntry ? lastEntry.label : null,
+      lastCronRunAt: Date.now()
+    }));
+    return;
   }
 
   // --- 静的ファイル配信 ---
@@ -279,5 +303,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.2.0 running at http://localhost:${PORT}`);
+  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.2.2 running at http://localhost:${PORT}`);
 });

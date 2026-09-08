@@ -1,11 +1,12 @@
 /**
- * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.2.0
+ * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.2.2
  * 
  * 機能:
  * 1. SwitchBot Open API プロキシ (/api/switchbot)
  * 2. クラウド設定共有 API (/api/sync/config) - カード並び順・色・外気温設定をKVで全端末同期
- * 3. 温度履歴クラウド蓄積 API (/api/sync/history) - 24時間データ共有・CSV出力対応
- * 4. 無人定期実行 Cron Triggers (scheduled) - 10分おきに自動で温度計データを記録
+ * 3. 温度履歴クラウド蓄積 API (/api/sync/history) - 30分間隔データ蓄積・CSV出力対応
+ * 4. 無人定期実行ステータス API (/api/sync/status) - 24時間稼働確認
+ * 5. 無人定期実行 Cron Triggers (scheduled) - 30分おきに自動で各温度計データを無人記録
  */
 
 import { onRequestGet, onRequestPost, onRequestOptions, callSwitchBotApi, jsonResponse } from './functions/api/switchbot.js';
@@ -109,11 +110,14 @@ export default {
           const historyRaw = await env.KUWAGATA_KV.get("history:temp_log");
           let history = historyRaw ? JSON.parse(historyRaw) : [];
 
-          // 重複記録の防止（最新のエントリと時刻が近すぎる場合は上書き/スキップ）
+          // 30分間隔ポリシー（前回記録から25分以上経過している場合のみ記録）
           const lastEntry = history[history.length - 1];
-          if (!lastEntry || (newEntry.time - lastEntry.time) >= 180000) { // 3分以上間隔
+          const lastTime = lastEntry ? (lastEntry.ts || lastEntry.time || 0) : 0;
+          const entryTime = newEntry.ts || newEntry.time || Date.now();
+
+          if (!lastEntry || (entryTime - lastTime) >= 1500000) { // 25分以上経過
             history.push(newEntry);
-            if (history.length > 1008) { // 直近7日分（10分おき = 1日144件 x 7日 = 1008件）
+            if (history.length > 1008) { // 30分おき = 1日48件 x 21日分 = 1008件
               history = history.slice(-1008);
             }
             await env.KUWAGATA_KV.put("history:temp_log", JSON.stringify(history));
@@ -127,12 +131,45 @@ export default {
       return new Response("Method not allowed", { status: 405 });
     }
 
+    // 4. 無人自動記録ステータス確認 API (/api/sync/status)
+    if (pathname === "/api/sync/status") {
+      if (!env.KUWAGATA_KV) {
+        return jsonResponse({ success: false, error: "KUWAGATA_KV がバインドされていません" }, 500);
+      }
+
+      try {
+        const botConfigRaw = await env.KUWAGATA_KV.get("config:switchbot");
+        const botConfig = botConfigRaw ? JSON.parse(botConfigRaw) : null;
+
+        const historyRaw = await env.KUWAGATA_KV.get("history:temp_log");
+        const history = historyRaw ? JSON.parse(historyRaw) : [];
+        const lastEntry = history.length > 0 ? history[history.length - 1] : null;
+
+        const lastCronRunRaw = await env.KUWAGATA_KV.get("status:last_cron_run");
+        const lastCronRun = lastCronRunRaw ? parseInt(lastCronRunRaw, 10) : null;
+
+        return jsonResponse({
+          success: true,
+          intervalMinutes: 30,
+          cronSchedule: "30分おき (*/30 * * * *)",
+          hasCredentials: !!(botConfig && botConfig.token && botConfig.secret),
+          deviceCount: (botConfig && botConfig.devices) ? botConfig.devices.length : 0,
+          totalRecords: history.length,
+          lastRecordedAt: lastEntry ? (lastEntry.ts || lastEntry.time) : null,
+          lastRecordedLabel: lastEntry ? lastEntry.label : null,
+          lastCronRunAt: lastCronRun
+        });
+      } catch (err) {
+        return jsonResponse({ success: false, error: err.message }, 500);
+      }
+    }
+
     // 静的アセットにヒットしなかった場合は 404
     return new Response("Not Found", { status: 404 });
   },
 
   /**
-   * ⏱️ 定期実行（Cron Triggers）ハンドラー (10分おき)
+   * ⏱️ 定期実行（Cron Triggers）ハンドラー (30分おき無人自動記録)
    */
   async scheduled(event, env, ctx) {
     if (!env.KUWAGATA_KV) return;
@@ -140,7 +177,10 @@ export default {
     try {
       // 1. 保存されているSwitchBot認証情報 & デバイス一覧を取得
       const botConfigRaw = await env.KUWAGATA_KV.get("config:switchbot");
-      if (!botConfigRaw) return;
+      if (!botConfigRaw) {
+        console.warn("Scheduled cron: config:switchbot not configured in KV yet");
+        return;
+      }
       const botConfig = JSON.parse(botConfigRaw);
       const { token, secret, devices } = botConfig;
       if (!token || !secret || !devices || devices.length === 0) return;
@@ -189,10 +229,11 @@ export default {
         ts: now.getTime(),
         time: now.getTime(),
         label: label,
-        readings: readings
+        readings: readings,
+        source: "cron_30m"
       };
 
-      // 4. 履歴に追加保存
+      // 4. 履歴に追加保存（最大1008件 = 30分おきで約3週間分）
       const historyRaw = await env.KUWAGATA_KV.get("history:temp_log");
       let history = historyRaw ? JSON.parse(historyRaw) : [];
       history.push(newEntry);
@@ -200,6 +241,7 @@ export default {
         history = history.slice(-1008);
       }
       await env.KUWAGATA_KV.put("history:temp_log", JSON.stringify(history));
+      await env.KUWAGATA_KV.put("status:last_cron_run", now.getTime().toString());
 
     } catch (err) {
       console.error("Scheduled cron error:", err);

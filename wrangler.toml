@@ -11,4 +11,4 @@ binding = "KUWAGATA_KV"
 id = "02332652fb154337bd94117bced86648"
 
 [triggers]
-crons = ["*/10 * * * *"]
+crons = ["*/30 * * * *"]

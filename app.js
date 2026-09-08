@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.2.1
- * 外気温グラフ折れ線＆右目盛り赤色同期、BLE MACアドレスのワンクリック・クリップボードコピー機能
+ * Kuwagata Room Monitor - Main Application Logic v3.2.2
+ * 30分間隔温度データ蓄積＆CSVダウンサンプリング出力、24時間無人記録稼働ステータスUI
  */
 
-const APP_VERSION = "v3.2.1";
+const APP_VERSION = "v3.2.2";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -364,6 +364,10 @@ const elements = {
   btnModalExportCsv: document.getElementById("btnModalExportCsv"),
   btnSyncPush: document.getElementById("btnSyncPush"),
   btnSyncPull: document.getElementById("btnSyncPull"),
+  cronStatusBox: document.getElementById("cronStatusBox"),
+  cronStatusBadge: document.getElementById("cronStatusBadge"),
+  cronLastRecordedTime: document.getElementById("cronLastRecordedTime"),
+  cronStatusDesc: document.getElementById("cronStatusDesc"),
 
   // 💬 エアコン送信イベント詳細ツールチップ & 履歴チップ
   airconEventTooltip: document.getElementById("airconEventTooltip"),
@@ -438,9 +442,10 @@ window.addEventListener("DOMContentLoaded", () => {
   initAirconUI();
   initTempChart();
 
-  // ☁️ クラウド共有設定 & 24時間温度履歴の自動取得
+  // ☁️ クラウド共有設定 & 24時間温度履歴の自動取得 & 稼働状況確認
   fetchSharedConfig();
   fetchCloudTempHistory();
+  fetchCronStatus();
 });
 
 function initLocalhostDebugMode() {
@@ -804,6 +809,7 @@ function setupEventListeners() {
   elements.settingsBtn.addEventListener("click", () => {
     updateOutdoorMeterSettingsUI();
     updateColorSettingsInModal();
+    fetchCronStatus();
     elements.settingsModal.classList.remove("hidden");
     logger.add("info", "設定モーダルを開きました");
   });
@@ -1074,6 +1080,7 @@ async function syncConfigToCloud(isManual = false) {
     if (data && data.success) {
       updateCloudSyncStatus("success", "同期完了");
       localStorage.setItem(STORAGE_KEYS.LAST_CLOUD_SYNC, Date.now().toString());
+      fetchCronStatus();
       logger.add("success", "設定をクラウド(KV)へ保存しました", {
         meterOrderCount: (payload.config.meterOrder || []).length,
         colorsCount: Object.keys(payload.config.meterColors || {}).length,
@@ -1218,7 +1225,58 @@ async function fetchCloudTempHistory() {
 }
 
 /**
- * 📊 内外温度差分析用 CSVエクスポート機能
+ * 🤖 24時間無人自動記録ステータスの取得とUI反映
+ */
+async function fetchCronStatus() {
+  if (!elements.cronStatusBox) return;
+
+  try {
+    const res = await fetch("/api/sync/status");
+    if (!res.ok) return;
+
+    const data = await res.json();
+    if (data && data.success) {
+      if (elements.cronStatusBadge) {
+        if (data.hasCredentials) {
+          elements.cronStatusBadge.textContent = "● 稼働中 (30分おき)";
+          elements.cronStatusBadge.style.color = "#10b981";
+          elements.cronStatusBadge.style.background = "rgba(16, 185, 129, 0.15)";
+          elements.cronStatusBadge.style.borderColor = "rgba(16, 185, 129, 0.3)";
+        } else {
+          elements.cronStatusBadge.textContent = "⚠️ キー未保存（手動記録のみ）";
+          elements.cronStatusBadge.style.color = "#f59e0b";
+          elements.cronStatusBadge.style.background = "rgba(245, 158, 11, 0.15)";
+          elements.cronStatusBadge.style.borderColor = "rgba(245, 158, 11, 0.3)";
+        }
+      }
+
+      if (elements.cronLastRecordedTime) {
+        if (data.lastRecordedAt) {
+          const d = new Date(data.lastRecordedAt);
+          const dateStr = !isNaN(d.getTime())
+            ? `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+            : (data.lastRecordedLabel || "--");
+          elements.cronLastRecordedTime.textContent = `${dateStr} (${data.totalRecords || 0}件蓄積中)`;
+        } else {
+          elements.cronLastRecordedTime.textContent = "未記録 (最初の30分実行をお待ちください)";
+        }
+      }
+
+      if (elements.cronStatusDesc) {
+        if (data.hasCredentials) {
+          elements.cronStatusDesc.textContent = `Cloudflare Workers Cronにより、PC・スマホを閉じていてもクラウド上に30分間隔（1日48回）で自動記録されます。（累計 ${data.totalRecords || 0} 件蓄積中）`;
+        } else {
+          elements.cronStatusDesc.textContent = `SwitchBot APIキーがまだクラウドに保存されていません。上記の「💾 キーを保存」を押すと、24時間無人記録が有効化されます。`;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("fetchCronStatus failed:", err);
+  }
+}
+
+/**
+ * 📊 内外温度差分析用 CSVエクスポート機能 (30分間隔ダウンサンプリング・1日最大48行)
  */
 function exportTempHistoryCsv() {
   if (!appState.tempHistory || appState.tempHistory.length === 0) {
@@ -1246,6 +1304,20 @@ function exportTempHistoryCsv() {
   const outdoorId = appState.outdoorMeterId;
   const outdoorMeter = meters.find(m => m.deviceId === outdoorId);
 
+  // 30分間隔（約25分以上の間隔）で間引き（ダウンサンプリング）を行い、
+  // 1日あたり最大48行程度の見やすく実用的なCSVデータに整形
+  const filteredHistory = [];
+  let lastExportedTime = 0;
+  const sortedHistory = [...appState.tempHistory].sort((a, b) => (a.ts || a.time || 0) - (b.ts || b.time || 0));
+
+  sortedHistory.forEach(record => {
+    const epoch = record.ts || record.time || 0;
+    if (filteredHistory.length === 0 || (epoch - lastExportedTime) >= 25 * 60 * 1000) {
+      filteredHistory.push(record);
+      lastExportedTime = epoch;
+    }
+  });
+
   // CSVヘッダーの生成
   const headerCols = ["日時", "タイムスタンプ(ms)"];
 
@@ -1268,7 +1340,7 @@ function exportTempHistoryCsv() {
   const csvRows = [headerCols.join(",")];
 
   // データ行の生成
-  appState.tempHistory.forEach(record => {
+  filteredHistory.forEach(record => {
     const epoch = record.ts || record.time || 0;
     const d = new Date(epoch);
     const dateStr = !isNaN(d.getTime()) 
@@ -1317,7 +1389,7 @@ function exportTempHistoryCsv() {
 
   const now = new Date();
   const fileDate = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-  const filename = `kuwagata_temp_history_${fileDate}.csv`;
+  const filename = `kuwagata_temp_history_30m_${fileDate}.csv`;
 
   const link = document.createElement("a");
   link.setAttribute("href", url);
@@ -1327,9 +1399,10 @@ function exportTempHistoryCsv() {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 
-  logger.add("success", `内外温度差分析用CSVをダウンロードしました: [${filename}]`, {
+  logger.add("success", `内外温度差分析用CSV (30分間隔) をダウンロードしました: [${filename}]`, {
     filename: filename,
-    recordsCount: appState.tempHistory.length,
+    recordsCount: filteredHistory.length,
+    rawRecordsCount: appState.tempHistory.length,
     metersCount: meters.length,
     hasOutdoorSensor: !!outdoorMeter
   });
@@ -1671,11 +1744,21 @@ async function refreshThermometers() {
 }
 
 /**
- * 📈 温度時系列履歴の蓄積
+ * 📈 温度時系列履歴の蓄積 (30分間隔ポリシー)
  */
 function recordTempHistory(results, timestampDate) {
-  const timeLabel = timestampDate.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
   const timeEpoch = timestampDate.getTime();
+
+  // 30分間隔記録ポリシー（前回記録から25分未満の場合はスキップして過剰記録を防止）
+  if (appState.tempHistory && appState.tempHistory.length > 0) {
+    const lastRecord = appState.tempHistory[appState.tempHistory.length - 1];
+    const lastEpoch = lastRecord.ts || lastRecord.time || 0;
+    if ((timeEpoch - lastEpoch) < 25 * 60 * 1000) {
+      return;
+    }
+  }
+
+  const timeLabel = timestampDate.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
 
   const record = {
     ts: timeEpoch,
@@ -1696,7 +1779,7 @@ function recordTempHistory(results, timestampDate) {
 
   appState.tempHistory.push(record);
 
-  // 最大1008件まで保持（直近7日分: 10分おき = 1日144件 x 7日）
+  // 最大1008件まで保持（直近21日分: 30分おき = 1日48件 x 21日）
   if (appState.tempHistory.length > 1008) {
     appState.tempHistory.shift();
   }

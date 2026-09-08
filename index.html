@@ -18,7 +18,7 @@
     <div class="auth-card">
       <div class="auth-icon">🪲</div>
       <h2>クワガタ飼育室 環境監視</h2>
-      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.2.1 Security Gate</div>
+      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.2.2 Security Gate</div>
       <p class="auth-desc">セキュリティ保護されています。<br>合言葉（パスコード）を入力してください。</p>
       
       <form id="authForm">
@@ -39,7 +39,7 @@
         <span class="brand-icon">🪲</span>
         <div>
           <h1>クワガタ飼育室 環境監視</h1>
-          <div class="app-sub-title">Kuwagata Room Monitor v3.2.1</div>
+          <div class="app-sub-title">Kuwagata Room Monitor v3.2.2</div>
         </div>
       </div>
       <div class="header-actions">
@@ -374,12 +374,29 @@
           <span style="font-size: 0.72rem; color: var(--accent-blue); background: rgba(56, 189, 248, 0.12); padding: 1px 6px; border-radius: 4px; font-weight: 600;">全端末自動共有</span>
         </h4>
         <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 10px;">
-          カードの並び順・色・外気温設定はCloudflare KVを通じてパートナー様とリアルタイム共有されます。また、10分おきの定期自動記録による温度推移データはCSV形式でいつでもダウンロード可能です。
+          カードの並び順・色・外気温設定はCloudflare KVを通じてパートナー様とリアルタイム共有されます。また、30分おきの定期自動記録による温度推移データはCSV形式でいつでもダウンロード可能です。
         </p>
+
+        <!-- ☁️ 24時間無人自動記録 稼働ステータス情報ボックス -->
+        <div id="cronStatusBox" style="background: var(--bg-primary); padding: 12px; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 12px; font-size: 0.8rem;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <span style="font-weight: 600; display: flex; align-items: center; gap: 6px;">
+              <span>🤖</span> 24時間無人自動記録
+            </span>
+            <span id="cronStatusBadge" style="font-size: 0.72rem; padding: 2px 8px; border-radius: 12px; background: rgba(16, 185, 129, 0.15); color: #10b981; font-weight: 600; border: 1px solid rgba(16, 185, 129, 0.3);">
+              ● 稼働中 (30分おき)
+            </span>
+          </div>
+          <div style="color: var(--text-muted); line-height: 1.5; font-size: 0.75rem;">
+            <div>最終記録日時: <strong id="cronLastRecordedTime" style="color: var(--text-primary); font-family: monospace;">確認中...</strong></div>
+            <div id="cronStatusDesc" style="margin-top: 4px;">Cloudflare Workers Cronにより、PC・スマホを閉じていてもクラウド上に30分間隔で温湿度データが自動蓄積されます。</div>
+          </div>
+        </div>
+
         <div style="display: flex; gap: 8px; flex-wrap: wrap;">
           <button type="button" id="btnSyncPush" class="btn" style="flex: 1; min-width: 130px; font-size: 0.8rem;">☁️ クラウドに即時保存</button>
           <button type="button" id="btnSyncPull" class="btn" style="flex: 1; min-width: 130px; font-size: 0.8rem;">🔄 クラウドから再読込</button>
-          <button type="button" id="btnModalExportCsv" class="btn btn-primary" style="flex: 1; min-width: 130px; font-size: 0.8rem;">📊 CSVダウンロード</button>
+          <button type="button" id="btnModalExportCsv" class="btn btn-primary" style="flex: 1; min-width: 130px; font-size: 0.8rem;">📊 CSVダウンロード (30分間隔)</button>
         </div>
       </div>
 
@@ -434,6 +451,6 @@
   <!-- 🍞 クリップボードコピー等のトースト通知コンテナ -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="app.js?v=3.2.1"></script>
+  <script src="app.js?v=3.2.2"></script>
 </body>
 </html>
