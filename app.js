@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.2.0
- * Cloudflare KV クラウド共有（並び順・色・外気温設定）、Cron無人24時間自動蓄積、および内外温度差CSVエクスポート機能
+ * Kuwagata Room Monitor - Main Application Logic v3.2.1
+ * 外気温グラフ折れ線＆右目盛り赤色同期、BLE MACアドレスのワンクリック・クリップボードコピー機能
  */
 
-const APP_VERSION = "v3.2.0";
+const APP_VERSION = "v3.2.1";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -19,6 +19,68 @@ function formatMacAddress(id) {
     return clean.match(/.{1,2}/g).join(":");
   }
   return id;
+}
+
+/**
+ * 📋 クリップボードへのテキストコピー
+ */
+function copyToClipboard(text, label = "") {
+  if (!text) return;
+  const cleanText = text.trim();
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(cleanText).then(() => {
+      showToast(`📋 MACアドレスをコピーしました:\n${cleanText}`);
+      logger.add("info", `BLE MACアドレスをコピーしました: [${cleanText}]`, { mac: cleanText, target: label });
+    }).catch(() => fallbackCopy(cleanText, label));
+  } else {
+    fallbackCopy(cleanText, label);
+  }
+}
+
+function fallbackCopy(text, label = "") {
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    document.execCommand("copy");
+    showToast(`📋 MACアドレスをコピーしました:\n${text}`);
+    logger.add("info", `BLE MACアドレスをコピーしました (fallback): [${text}]`, { mac: text, target: label });
+  } catch (err) {
+    alert("コピーに失敗しました: " + text);
+  }
+  document.body.removeChild(textarea);
+}
+
+/**
+ * 🍞 画面下部にトースト通知をふわっと表示
+ */
+function showToast(message) {
+  let container = document.getElementById("toastContainer");
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toastContainer";
+    container.className = "toast-container";
+    document.body.appendChild(container);
+  }
+
+  const toast = document.createElement("div");
+  toast.className = "toast-message";
+  toast.textContent = message;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add("toast-show");
+  }, 10);
+
+  setTimeout(() => {
+    toast.classList.remove("toast-show");
+    setTimeout(() => {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 250);
+  }, 2400);
 }
 
 // 定数 & ストレージキー
@@ -47,16 +109,16 @@ const STORAGE_KEYS = {
 const MODE_NAMES = { "1": "自動", "2": "冷房", "3": "除湿", "4": "送風", "5": "暖房" };
 const FAN_NAMES = { "1": "自動", "2": "弱", "3": "中", "4": "強" };
 
-// 🎨 視認性の高いプリセットカラーパレット (8色)
+// 🎨 視認性の高いプリセットカラーパレット (8色・赤色先頭)
 const PRESET_COLORS = [
+  "#ef4444", // レッド (外気温推奨・赤)
   "#38bdf8", // 水色 (シアン)
   "#fb923c", // オレンジ
   "#34d399", // エメラルド (緑)
   "#c084fc", // パープル (紫)
   "#f43f5e", // ローズ (赤ピンク)
   "#eab308", // アンバー (黄)
-  "#06b6d4", // ティール (青緑)
-  "#ec4899"  // マゼンタ (ピンク)
+  "#06b6d4"  // ティール (青緑)
 ];
 
 // グラフ描画デフォルトカラーパレット (視認性の高い基本5色)
@@ -132,6 +194,18 @@ function getMeterColorConfig(deviceId, defaultIndex = 0) {
       cardBorder: hexToRgba(customHex, 0.45),
       badgeBg: hexToRgba(customHex, 0.2),
       badgeText: customHex
+    };
+  }
+  // ☀️ 外気温度計ならデフォルトは鮮やかな赤 (#ef4444)
+  if (deviceId && appState && deviceId === appState.outdoorMeterId) {
+    const redHex = "#ef4444";
+    return {
+      border: redHex,
+      bg: hexToRgba(redHex, 0.15),
+      cardBg: `linear-gradient(145deg, ${hexToRgba(redHex, 0.12)} 0%, rgba(15, 23, 42, 0.85) 100%)`,
+      cardBorder: hexToRgba(redHex, 0.45),
+      badgeBg: hexToRgba(redHex, 0.2),
+      badgeText: redHex
     };
   }
   return SENSOR_COLORS[defaultIndex % SENSOR_COLORS.length];
@@ -765,6 +839,19 @@ function setupEventListeners() {
     elements.btnModalExportCsv.addEventListener("click", exportTempHistoryCsv);
   }
 
+  // 📋 クリップボードへのMACアドレスコピー操作（全体委任）
+  document.addEventListener("click", (e) => {
+    const copyBtn = e.target.closest(".btn-copy-mac");
+    if (copyBtn) {
+      e.stopPropagation();
+      const mac = copyBtn.dataset.mac;
+      const name = copyBtn.dataset.name || "";
+      if (mac) {
+        copyToClipboard(mac, name);
+      }
+    }
+  });
+
   elements.btnSaveApiKeys.addEventListener("click", () => {
     const token = elements.sbTokenInput.value.trim();
     const secret = elements.sbSecretInput.value.trim();
@@ -1392,8 +1479,11 @@ function updateOutdoorMeterSettingsUI() {
   // 現在の選択ラベル表示
   const currentSelectedMeter = meterMap.get(appState.outdoorMeterId);
   if (currentSelectedMeter) {
+    const formattedMac = formatMacAddress(currentSelectedMeter.deviceId);
     if (elements.outdoorMeterCurrentName) elements.outdoorMeterCurrentName.textContent = currentSelectedMeter.deviceName;
-    if (elements.outdoorMeterMacBadge) elements.outdoorMeterMacBadge.textContent = `BLE MAC: ${formatMacAddress(currentSelectedMeter.deviceId)}`;
+    if (elements.outdoorMeterMacBadge) {
+      elements.outdoorMeterMacBadge.innerHTML = `BLE MAC: <span>${formattedMac}</span> <button type="button" class="btn-copy-mac" data-mac="${formattedMac}" data-name="${escapeHtml(currentSelectedMeter.deviceName)}" title="BLE MACをクリップボードにコピー">📋 コピー</button>`;
+    }
   } else {
     if (elements.outdoorMeterCurrentName) elements.outdoorMeterCurrentName.textContent = "未設定 (全て室内)";
     if (elements.outdoorMeterMacBadge) elements.outdoorMeterMacBadge.textContent = "";
@@ -1895,13 +1985,13 @@ function initTempChart() {
           position: "right",
           grid: { drawOnChartArea: false }, // 左軸のグリッド線と重なって二重線になるのを防止
           ticks: {
-            color: "#c084fc",
+            color: "#ef4444",
             callback: function(val) { return val + " ℃"; }
           },
           title: {
             display: true,
             text: "外気温 [右軸]",
-            color: "#c084fc",
+            color: "#ef4444",
             font: { size: 10, weight: "bold" }
           }
         }
@@ -2021,9 +2111,12 @@ function updateTempChart() {
     };
   });
 
-  // 外気温が表示中であれば右軸を表示、非表示なら非表示
+  // 外気温が表示中であれば右軸を表示、非表示なら非表示。また折れ線色と右目盛り色を完全同期
   if (appState.chartInstance.options.scales && appState.chartInstance.options.scales.yOutdoor) {
     appState.chartInstance.options.scales.yOutdoor.display = hasVisibleOutdoor;
+    const outdoorColor = getMeterColorConfig(appState.outdoorMeterId);
+    appState.chartInstance.options.scales.yOutdoor.ticks.color = outdoorColor.border;
+    appState.chartInstance.options.scales.yOutdoor.title.color = outdoorColor.border;
   }
 
   // フィルタリングされたエアコン送信イベント
@@ -2267,8 +2360,8 @@ function renderThermometerCards(meterDataList, isFresh = true) {
           <div class="sensor-name" style="color: #f8fafc; font-weight: 700; display: flex; align-items: center; gap: 5px;">
             <span class="drag-handle" data-id="${device.deviceId}" title="長押し・ドラッグして並び替え">⠿</span>
             <span class="color-dot-btn" data-id="${device.deviceId}" title="クリックして色を変更" style="display: inline-block; width: 11px; height: 11px; border-radius: 50%; background-color: ${color.border}; box-shadow: 0 0 6px ${color.border}; cursor: pointer; flex-shrink: 0;"></span>
-            <span class="device-name-text" title="固有BLE MAC: ${bleMacFormatted}" style="cursor: help;">${escapeHtml(device.deviceName)}</span>
-            <span class="mac-info-icon" data-mac="${bleMacFormatted}" data-name="${escapeHtml(device.deviceName)}" title="固有BLE MAC: ${bleMacFormatted}" style="cursor: pointer; opacity: 0.45; font-size: 0.72rem; padding: 0 2px;">ℹ️</span>
+            <span class="device-name-text" title="クリックでBLE MAC (${bleMacFormatted}) をコピー" style="cursor: pointer;">${escapeHtml(device.deviceName)}</span>
+            <span class="mac-info-icon" data-mac="${bleMacFormatted}" data-name="${escapeHtml(device.deviceName)}" title="クリックでBLE MAC (${bleMacFormatted}) をコピー" style="cursor: pointer; opacity: 0.65; font-size: 0.72rem; padding: 0 2px;">📋</span>
             ${cardStateBadge}
           </div>
           <div style="display: flex; gap: 4px; align-items: center;">
@@ -2333,14 +2426,26 @@ function renderThermometerCards(meterDataList, isFresh = true) {
     });
   });
 
-  // ℹ️ アイコンタップ/クリック時
+  // 📋 MACアイコンおよびデバイス名クリック時（クリップボードにコピー）
   const macIcons = elements.thermometerGrid.querySelectorAll(".mac-info-icon");
   macIcons.forEach(icon => {
     icon.addEventListener("click", (e) => {
       e.stopPropagation();
       const mac = icon.dataset.mac;
       const name = icon.dataset.name;
-      alert(`【${name}】\n固有BLE MAC: ${mac}\n（※物理ハードウェア固有の識別番号です）`);
+      copyToClipboard(mac, name);
+    });
+  });
+
+  const nameTexts = elements.thermometerGrid.querySelectorAll(".device-name-text");
+  nameTexts.forEach(txt => {
+    txt.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const card = txt.closest(".sensor-card");
+      const icon = card ? card.querySelector(".mac-info-icon") : null;
+      if (icon) {
+        copyToClipboard(icon.dataset.mac, icon.dataset.name);
+      }
     });
   });
 
@@ -2733,11 +2838,19 @@ function renderDeviceListModal(devices, infrareds) {
 
   devices.forEach(d => {
     const isChecked = !appState.excludedDeviceIds.includes(d.deviceId);
+    const formattedMac = formatMacAddress(d.deviceId);
     html += `
-      <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer; padding: 4px; border-radius: 4px; background: rgba(255,255,255,0.03);">
-        <input type="checkbox" class="device-toggle-checkbox" data-id="${d.deviceId}" ${isChecked ? "checked" : ""}>
-        <span style="font-size: 0.85rem;"><strong>${escapeHtml(d.deviceName)}</strong> <span style="color: var(--text-muted); font-size: 0.75rem;">(${d.deviceType})</span></span>
-      </label>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding: 4px 6px; border-radius: 4px; background: rgba(255,255,255,0.03); gap: 8px;">
+        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; min-width: 0; flex: 1;">
+          <input type="checkbox" class="device-toggle-checkbox" data-id="${d.deviceId}" ${isChecked ? "checked" : ""}>
+          <span style="font-size: 0.85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+            <strong>${escapeHtml(d.deviceName)}</strong> <span style="color: var(--text-muted); font-size: 0.75rem;">(${d.deviceType})</span>
+          </span>
+        </label>
+        <button type="button" class="btn-copy-mac" data-mac="${formattedMac}" data-name="${escapeHtml(d.deviceName)}" title="BLE MAC (${formattedMac}) をクリップボードにコピー">
+          📋 ${formattedMac}
+        </button>
+      </div>
     `;
   });
 
