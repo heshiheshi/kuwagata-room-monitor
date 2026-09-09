@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.2.2
- * 30分間隔温度データ蓄積＆CSVダウンサンプリング出力、24時間無人記録稼働ステータスUI
+ * Kuwagata Room Monitor - Main Application Logic v3.3.0
+ * LINE公式アカウントMessaging API連携（超シンプル定時サマリー＆緊急温度異常アラート）
  */
 
-const APP_VERSION = "v3.2.2";
+const APP_VERSION = "v3.3.0";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -29,29 +29,50 @@ function copyToClipboard(text, label = "") {
   const cleanText = text.trim();
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(cleanText).then(() => {
-      showToast(`📋 MACアドレスをコピーしました:\n${cleanText}`);
+      showCopyToast(cleanText, label);
       logger.add("info", `BLE MACアドレスをコピーしました: [${cleanText}]`, { mac: cleanText, target: label });
-    }).catch(() => fallbackCopy(cleanText, label));
+    }).catch(() => fallbackCopyToClipboard(cleanText, label));
   } else {
-    fallbackCopy(cleanText, label);
+    fallbackCopyToClipboard(cleanText, label);
   }
 }
 
-function fallbackCopy(text, label = "") {
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.opacity = "0";
-  document.body.appendChild(textarea);
-  textarea.select();
+function fallbackCopyToClipboard(text, label = "") {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
   try {
     document.execCommand("copy");
-    showToast(`📋 MACアドレスをコピーしました:\n${text}`);
+    showCopyToast(text, label);
     logger.add("info", `BLE MACアドレスをコピーしました (fallback): [${text}]`, { mac: text, target: label });
   } catch (err) {
     alert("コピーに失敗しました: " + text);
   }
-  document.body.removeChild(textarea);
+  document.body.removeChild(ta);
+}
+
+function showCopyToast(text, label = "") {
+  const toastContainer = document.getElementById("toastContainer");
+  if (!toastContainer) return;
+
+  const toast = document.createElement("div");
+  toast.className = "toast-message";
+  const prefix = label ? `${label}: ` : "";
+  toast.innerHTML = `📋 コピーしました: <strong>${prefix}${text}</strong>`;
+  toastContainer.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add("toast-show");
+    setTimeout(() => {
+      toast.classList.remove("toast-show");
+      setTimeout(() => {
+        if (toast.parentNode) toast.parentNode.removeChild(toast);
+      }, 300);
+    }, 2200);
+  }, 10);
 }
 
 /**
@@ -103,7 +124,8 @@ const STORAGE_KEYS = {
   OUTDOOR_METER_ID: "kuwagata_outdoor_meter_id", // 外気温センサーdeviceId
   METER_ORDER: "kuwagata_meter_order",           // 温度計カードの並び順 (deviceId配列)
   METER_COLORS: "kuwagata_meter_colors",         // 各温度計のカスタム色マッピング { [deviceId]: "#hex" }
-  LAST_CLOUD_SYNC: "kuwagata_last_cloud_sync"    // 最終クラウド同期時刻
+  LAST_CLOUD_SYNC: "kuwagata_last_cloud_sync",   // 最終クラウド同期時刻
+  LINE_CONFIG: "kuwagata_line_config"            // LINE通知設定
 };
 
 const MODE_NAMES = { "1": "自動", "2": "冷房", "3": "除湿", "4": "送風", "5": "暖房" };
@@ -315,7 +337,9 @@ let appState = {
   autoRefreshTimer: null,
   deviceSyncTimer: null,
   orientationMode: localStorage.getItem(STORAGE_KEYS.ORIENTATION_MODE) || "auto",
-  renderedAirconPins: [] // グラフ上に描画されたピンの座標とイベント情報（クリック判定用）
+  renderedAirconPins: [], // グラフ上に描画されたピンの座標とイベント情報（クリック判定用）
+  lineConfig: null,       // LINE通知設定 { token, to, summaryEnabled, summaryHours, alertMaxTemp, alertMinTemp }
+  detectedLineDest: null  // Webhook等で自動検出されたLINE送信先ID
 };
 
 // DOM要素
@@ -368,6 +392,19 @@ const elements = {
   cronStatusBadge: document.getElementById("cronStatusBadge"),
   cronLastRecordedTime: document.getElementById("cronLastRecordedTime"),
   cronStatusDesc: document.getElementById("cronStatusDesc"),
+
+  // 💬 LINE通知連携要素
+  lineTokenInput: document.getElementById("lineTokenInput"),
+  lineToInput: document.getElementById("lineToInput"),
+  lineAlertMaxInput: document.getElementById("lineAlertMaxInput"),
+  lineAlertMinInput: document.getElementById("lineAlertMinInput"),
+  lineSummaryEnabledInput: document.getElementById("lineSummaryEnabledInput"),
+  btnSaveLineConfig: document.getElementById("btnSaveLineConfig"),
+  btnTestLineNotify: document.getElementById("btnTestLineNotify"),
+  btnApplyDetectedLineDest: document.getElementById("btnApplyDetectedLineDest"),
+  lineDetectedDestInfo: document.getElementById("lineDetectedDestInfo"),
+  lineDetectedDestText: document.getElementById("lineDetectedDestText"),
+  lineStatusBadge: document.getElementById("lineStatusBadge"),
 
   // 💬 エアコン送信イベント詳細ツールチップ & 履歴チップ
   airconEventTooltip: document.getElementById("airconEventTooltip"),
@@ -442,10 +479,11 @@ window.addEventListener("DOMContentLoaded", () => {
   initAirconUI();
   initTempChart();
 
-  // ☁️ クラウド共有設定 & 24時間温度履歴の自動取得 & 稼働状況確認
+  // ☁️ クラウド共有設定 & 24時間温度履歴の自動取得 & 稼働状況確認 & LINE設定取得
   fetchSharedConfig();
   fetchCloudTempHistory();
   fetchCronStatus();
+  fetchLineConfig();
 });
 
 function initLocalhostDebugMode() {
@@ -810,6 +848,7 @@ function setupEventListeners() {
     updateOutdoorMeterSettingsUI();
     updateColorSettingsInModal();
     fetchCronStatus();
+    fetchLineConfig();
     elements.settingsModal.classList.remove("hidden");
     logger.add("info", "設定モーダルを開きました");
   });
@@ -843,6 +882,22 @@ function setupEventListeners() {
   }
   if (elements.btnModalExportCsv) {
     elements.btnModalExportCsv.addEventListener("click", exportTempHistoryCsv);
+  }
+
+  // 💬 LINE通知連携イベント
+  if (elements.btnSaveLineConfig) {
+    elements.btnSaveLineConfig.addEventListener("click", () => saveLineConfig(true));
+  }
+  if (elements.btnTestLineNotify) {
+    elements.btnTestLineNotify.addEventListener("click", testLineNotification);
+  }
+  if (elements.btnApplyDetectedLineDest) {
+    elements.btnApplyDetectedLineDest.addEventListener("click", () => {
+      if (appState.detectedLineDest && appState.detectedLineDest.destinationId) {
+        elements.lineToInput.value = appState.detectedLineDest.destinationId;
+        showCopyToast(appState.detectedLineDest.destinationId, "送信先IDにセットしました");
+      }
+    });
   }
 
   // 📋 クリップボードへのMACアドレスコピー操作（全体委任）
@@ -1272,6 +1327,182 @@ async function fetchCronStatus() {
     }
   } catch (err) {
     console.warn("fetchCronStatus failed:", err);
+  }
+}
+
+/**
+ * 💬 LINE通知設定のクラウド(KV)からの取得とUI反映
+ */
+async function fetchLineConfig() {
+  try {
+    const res = await fetch("/api/line/config");
+    if (!res.ok) return;
+
+    const data = await res.json();
+    if (data && data.success) {
+      if (data.config) {
+        appState.lineConfig = data.config;
+        localStorage.setItem(STORAGE_KEYS.LINE_CONFIG, JSON.stringify(data.config));
+
+        if (elements.lineTokenInput && data.config.token) {
+          elements.lineTokenInput.value = data.config.token;
+        }
+        if (elements.lineToInput && data.config.to) {
+          elements.lineToInput.value = data.config.to;
+        }
+        if (elements.lineAlertMaxInput && typeof data.config.alertMaxTemp === "number") {
+          elements.lineAlertMaxInput.value = data.config.alertMaxTemp;
+        }
+        if (elements.lineAlertMinInput && typeof data.config.alertMinTemp === "number") {
+          elements.lineAlertMinInput.value = data.config.alertMinTemp;
+        }
+        if (elements.lineSummaryEnabledInput) {
+          elements.lineSummaryEnabledInput.checked = data.config.summaryEnabled !== false;
+        }
+      }
+
+      // Webhook等で自動検出された最新送信先IDの表示
+      if (data.detectedDestination && data.detectedDestination.destinationId) {
+        appState.detectedLineDest = data.detectedDestination;
+        if (elements.lineDetectedDestInfo && elements.lineDetectedDestText) {
+          elements.lineDetectedDestText.textContent = data.detectedDestination.destinationId;
+          elements.lineDetectedDestInfo.style.display = "block";
+        }
+        if (elements.btnApplyDetectedLineDest) {
+          elements.btnApplyDetectedLineDest.classList.remove("hidden");
+        }
+      }
+
+      // バッジ表示の更新
+      if (elements.lineStatusBadge) {
+        const hasToken = elements.lineTokenInput && elements.lineTokenInput.value.trim();
+        const hasTo = elements.lineToInput && elements.lineToInput.value.trim();
+        if (hasToken && hasTo) {
+          elements.lineStatusBadge.textContent = "● 連携設定済";
+          elements.lineStatusBadge.style.color = "#10b981";
+          elements.lineStatusBadge.style.background = "rgba(16, 185, 129, 0.12)";
+        } else {
+          elements.lineStatusBadge.textContent = "未設定";
+          elements.lineStatusBadge.style.color = "var(--text-muted)";
+          elements.lineStatusBadge.style.background = "rgba(148, 163, 184, 0.12)";
+        }
+      }
+    }
+  } catch (err) {
+    console.warn("fetchLineConfig error:", err);
+  }
+}
+
+/**
+ * 💬 LINE通知設定のクラウド(KV)への保存
+ */
+async function saveLineConfig(isManual = false) {
+  const token = elements.lineTokenInput ? elements.lineTokenInput.value.trim() : "";
+  const to = elements.lineToInput ? elements.lineToInput.value.trim() : "";
+  const alertMax = elements.lineAlertMaxInput ? parseFloat(elements.lineAlertMaxInput.value) : 18.5;
+  const alertMin = elements.lineAlertMinInput ? parseFloat(elements.lineAlertMinInput.value) : 14.5;
+  const summaryEnabled = elements.lineSummaryEnabledInput ? elements.lineSummaryEnabledInput.checked : true;
+
+  if (isManual && (!token || !to)) {
+    if (!confirm("アクセストークンまたは送信先IDが入力されていません。このまま保存しますか？")) {
+      return;
+    }
+  }
+
+  const payload = {
+    token: token,
+    to: to,
+    alertMaxTemp: isNaN(alertMax) ? 18.5 : alertMax,
+    alertMinTemp: isNaN(alertMin) ? 14.5 : alertMin,
+    summaryEnabled: summaryEnabled,
+    summaryHours: [8, 20]
+  };
+
+  try {
+    const res = await fetch("/api/line/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    });
+
+    const data = await res.json();
+    if (data && data.success) {
+      appState.lineConfig = payload;
+      localStorage.setItem(STORAGE_KEYS.LINE_CONFIG, JSON.stringify(payload));
+      logger.add("success", "LINE通知設定をクラウドに保存しました", {
+        hasToken: !!token,
+        to: to,
+        alertMax: payload.alertMaxTemp,
+        alertMin: payload.alertMinTemp,
+        summaryEnabled: payload.summaryEnabled
+      });
+
+      if (elements.lineStatusBadge) {
+        if (token && to) {
+          elements.lineStatusBadge.textContent = "● 連携設定済";
+          elements.lineStatusBadge.style.color = "#10b981";
+          elements.lineStatusBadge.style.background = "rgba(16, 185, 129, 0.12)";
+        } else {
+          elements.lineStatusBadge.textContent = "未設定";
+          elements.lineStatusBadge.style.color = "var(--text-muted)";
+          elements.lineStatusBadge.style.background = "rgba(148, 163, 184, 0.12)";
+        }
+      }
+
+      if (isManual) {
+        alert("LINE通知設定をクラウドに保存しました。\nパートナー様の端末でも自動共有されます。");
+      }
+    } else {
+      if (isManual) alert("LINE設定の保存に失敗しました: " + (data.error || "不明なエラー"));
+    }
+  } catch (err) {
+    logger.add("error", "LINE設定保存通信エラー: " + err.message);
+    if (isManual) alert("通信エラーが発生しました: " + err.message);
+  }
+}
+
+/**
+ * 🔔 LINEテスト送信
+ */
+async function testLineNotification() {
+  const token = elements.lineTokenInput ? elements.lineTokenInput.value.trim() : "";
+  const to = elements.lineToInput ? elements.lineToInput.value.trim() : "";
+
+  if (!token || !to) {
+    alert("アクセストークンと送信先IDの両方を入力してください。");
+    return;
+  }
+
+  if (elements.btnTestLineNotify) {
+    elements.btnTestLineNotify.disabled = true;
+    elements.btnTestLineNotify.textContent = "送信中...";
+  }
+
+  try {
+    const res = await fetch("/api/line/test", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, to })
+    });
+
+    const data = await res.json();
+    if (data && data.success) {
+      logger.add("success", "LINEテスト通知を送信しました", { to: to });
+      alert("LINEにテスト通知を送信しました！\nLINEアプリ（グループトーク）に通知が届いているかご確認ください。");
+      // 設定も保存
+      saveLineConfig(false);
+    } else {
+      logger.add("warn", "LINEテスト送信エラー", data);
+      alert("LINE送信に失敗しました:\n" + (data.error || "エラーが発生しました") + "\n\n※トークンが正しいか、公式アカウントがグループに招待されているかご確認ください。");
+    }
+  } catch (err) {
+    logger.add("error", "LINEテスト送信通信エラー: " + err.message);
+    alert("通信エラーが発生しました: " + err.message);
+  } finally {
+    if (elements.btnTestLineNotify) {
+      elements.btnTestLineNotify.disabled = false;
+      elements.btnTestLineNotify.textContent = "🔔 LINEテスト送信";
+    }
   }
 }
 

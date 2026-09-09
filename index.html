@@ -18,7 +18,7 @@
     <div class="auth-card">
       <div class="auth-icon">🪲</div>
       <h2>クワガタ飼育室 環境監視</h2>
-      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.2.2 Security Gate</div>
+      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.3.0 Security Gate</div>
       <p class="auth-desc">セキュリティ保護されています。<br>合言葉（パスコード）を入力してください。</p>
       
       <form id="authForm">
@@ -39,7 +39,7 @@
         <span class="brand-icon">🪲</span>
         <div>
           <h1>クワガタ飼育室 環境監視</h1>
-          <div class="app-sub-title">Kuwagata Room Monitor v3.2.2</div>
+          <div class="app-sub-title">Kuwagata Room Monitor v3.3.0</div>
         </div>
       </div>
       <div class="header-actions">
@@ -400,6 +400,78 @@
         </div>
       </div>
 
+      <!-- 💬 LINE公式アカウント通知連携 (定時サマリー & 緊急アラート) -->
+      <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
+        <h4 style="font-size: 0.95rem; margin-bottom: 6px; display: flex; align-items: center; justify-content: space-between;">
+          <span style="display: flex; align-items: center; gap: 6px;">
+            <span>💬</span> LINE通知連携（定時サマリー・アラート）
+          </span>
+          <span id="lineStatusBadge" style="font-size: 0.72rem; color: var(--accent-green); background: rgba(16, 185, 129, 0.12); padding: 1px 6px; border-radius: 4px; font-weight: 600;">LINE Messaging API</span>
+        </h4>
+        <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 10px;">
+          LINEグループに公式アカウント（Bot）を招待すると、朝夕の超シンプル定時サマリー（過去12時間推移）や温度異常アラートが自動で届きます。
+        </p>
+
+        <div style="background: var(--bg-primary); padding: 12px; border-radius: 8px; border: 1px solid var(--border-color); margin-bottom: 10px;">
+          <div class="form-group" style="margin-bottom: 10px;">
+            <label style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">チャンネルアクセストークン（長期）</label>
+            <input type="password" id="lineTokenInput" class="form-input" placeholder="LINE Developersで発行したアクセストークン">
+          </div>
+
+          <div class="form-group" style="margin-bottom: 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <label style="font-size: 0.75rem; color: var(--text-muted);">送信先ID（グループID または ユーザーID）</label>
+              <button type="button" id="btnApplyDetectedLineDest" class="btn hidden" style="padding: 1px 6px; font-size: 0.7rem; color: var(--accent-blue);" title="Webhookで検出された最新IDを自動入力">検出IDを適用</button>
+            </div>
+            <input type="text" id="lineToInput" class="form-input" placeholder="例: C12345678... または U12345678...">
+            <div id="lineDetectedDestInfo" style="font-size: 0.72rem; color: var(--accent-blue); margin-top: 3px; display: none;">
+              🤖 最新検出ID: <span id="lineDetectedDestText"></span>
+            </div>
+          </div>
+
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+            <div>
+              <label style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">警告上限温度 (超過時アラート)</label>
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <input type="number" id="lineAlertMaxInput" class="form-input" value="18.5" step="0.1" style="text-align: center; font-weight: 700;">
+                <span style="font-size: 0.85rem;">℃</span>
+              </div>
+            </div>
+            <div>
+              <label style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 4px;">警告下限温度 (未満時アラート)</label>
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <input type="number" id="lineAlertMinInput" class="form-input" value="14.5" step="0.1" style="text-align: center; font-weight: 700;">
+                <span style="font-size: 0.85rem;">℃</span>
+              </div>
+            </div>
+          </div>
+
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: 0.75rem; color: var(--text-muted);">
+            <span>⏰ 定時サマリー配信: <strong>朝 08:00 / 夜 20:00 (1日2回)</strong></span>
+            <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+              <input type="checkbox" id="lineSummaryEnabledInput" checked>
+              <span>有効</span>
+            </label>
+          </div>
+
+          <div style="display: flex; gap: 8px; margin-top: 10px;">
+            <button type="button" id="btnSaveLineConfig" class="btn" style="flex: 1; font-size: 0.8rem;">💾 LINE設定を保存</button>
+            <button type="button" id="btnTestLineNotify" class="btn btn-primary" style="flex: 1; font-size: 0.8rem;">🔔 LINEテスト送信</button>
+          </div>
+        </div>
+
+        <details style="font-size: 0.75rem; color: var(--text-muted); background: var(--bg-primary); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-color);">
+          <summary style="cursor: pointer; color: var(--accent-blue); font-weight: 600;">
+            💡 LINEグループIDの簡単な調べ方（Webhook連携）
+          </summary>
+          <div style="margin-top: 6px; line-height: 1.5;">
+            1. LINE DevelopersのMessaging API設定で「Webhook URL」に下記URLを登録し、「Webhookの利用」をONにします：<br>
+            <code style="background: rgba(0,0,0,0.2); padding: 2px 4px; border-radius: 4px; font-size: 0.7rem; word-break: break-all; color: var(--text-primary);">https://kuwagata-room-monitor2.heshikoumai.workers.dev/api/line/webhook</code><br>
+            2. LINEグループにBotを招待してグループ内で「設定」と投稿すると、BotがグループIDを自動認識し、本画面に「検出IDを適用」ボタンが表示されます。
+          </div>
+        </details>
+      </div>
+
       <!-- 📷 API対応カメラ情報セクション -->
       <div style="margin-top: 16px; border-top: 1px solid var(--border-color); padding-top: 14px;">
         <details style="font-size: 0.8rem; color: var(--text-muted); background: var(--bg-primary); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color);">
@@ -451,6 +523,6 @@
   <!-- 🍞 クリップボードコピー等のトースト通知コンテナ -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="app.js?v=3.2.2"></script>
+  <script src="app.js?v=3.3.0"></script>
 </body>
 </html>

@@ -1,5 +1,5 @@
 /**
- * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.2.2
+ * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.3.0
  * 外部npmパッケージ不要（Node.js標準機能のみで動作）
  * 
  * 機能:
@@ -8,6 +8,7 @@
  * - クラウド設定共有エミュレーション (/api/sync/config)
  * - 温度履歴蓄積エミュレーション (/api/sync/history) - 30分間隔対応
  * - 24時間無人記録ステータス確認エミュレーション (/api/sync/status)
+ * - LINE通知設定・テスト・Webhookエミュレーション (/api/line/*)
  */
 
 import http from "node:http";
@@ -33,7 +34,7 @@ function readDevKv() {
   } catch (e) {
     console.error("Failed to read .dev-kv.json:", e);
   }
-  return { sharedConfig: null, tempHistory: [], botConfig: null };
+  return { sharedConfig: null, tempHistory: [], botConfig: null, lineConfig: null, detectedDestination: null };
 }
 
 function writeDevKv(data) {
@@ -278,6 +279,151 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // --- 5. LINE通知設定 API エミュレーション (/api/line/config) ---
+  if (pathname === "/api/line/config") {
+    const kv = readDevKv();
+
+    if (req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        success: true,
+        config: kv.lineConfig,
+        detectedDestination: kv.detectedDestination
+      }));
+      return;
+    } else if (req.method === "POST") {
+      let bodyStr = "";
+      req.on("data", chunk => bodyStr += chunk);
+      req.on("end", () => {
+        try {
+          const body = JSON.parse(bodyStr);
+          kv.lineConfig = {
+            token: (body.token || "").trim(),
+            to: (body.to || "").trim(),
+            summaryEnabled: body.summaryEnabled !== false,
+            summaryHours: Array.isArray(body.summaryHours) ? body.summaryHours : [8, 20],
+            alertMaxTemp: typeof body.alertMaxTemp === "number" ? body.alertMaxTemp : 18.5,
+            alertMinTemp: typeof body.alertMinTemp === "number" ? body.alertMinTemp : 14.5,
+            alertCooldownMinutes: typeof body.alertCooldownMinutes === "number" ? body.alertCooldownMinutes : 60,
+            updatedAt: Date.now()
+          };
+          writeDevKv(kv);
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: true, message: "LINE設定をローカルに保存しました", config: kv.lineConfig }));
+        } catch (e) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+      });
+      return;
+    }
+  }
+
+  // --- 6. LINEテスト送信 API (/api/line/test) ---
+  if (pathname === "/api/line/test") {
+    if (req.method !== "POST") {
+      res.writeHead(405, { "Content-Type": "text/plain" });
+      res.end("Method Not Allowed");
+      return;
+    }
+
+    let bodyStr = "";
+    req.on("data", chunk => bodyStr += chunk);
+    req.on("end", async () => {
+      try {
+        const kv = readDevKv();
+        const body = bodyStr ? JSON.parse(bodyStr) : {};
+        const token = (body.token || (kv.lineConfig && kv.lineConfig.token) || "").trim();
+        const to = (body.to || (kv.lineConfig && kv.lineConfig.to) || "").trim();
+
+        if (!token || !to) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: "アクセストークンまたは送信先IDが設定されていません" }));
+          return;
+        }
+
+        const testMsg = `🪲 クワガタ飼育室 LINE通知連携テスト\n───────────────\nLINE通知の疎通が正常に確認できました！\nこのグループへ定時サマリー（朝08:00/夜20:00）および緊急温度異常アラートが自動配信されます。`;
+        
+        // 外部LINE APIへ送信
+        const lineReq = https.request({
+          hostname: "api.line.me",
+          path: "/v2/bot/message/push",
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${token}`
+          }
+        }, (lineRes) => {
+          let lineBody = "";
+          lineRes.on("data", c => lineBody += c);
+          lineRes.on("end", () => {
+            if (lineRes.statusCode === 200) {
+              res.writeHead(200, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ success: true, message: "LINEにテスト通知を送信しました" }));
+            } else {
+              res.writeHead(502, { "Content-Type": "application/json" });
+              res.end(JSON.stringify({ success: false, error: lineBody || "LINE APIエラー" }));
+            }
+          });
+        });
+
+        lineReq.on("error", (err) => {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: err.message }));
+        });
+
+        lineReq.write(JSON.stringify({
+          to: to,
+          messages: [{ type: "text", text: testMsg }]
+        }));
+        lineReq.end();
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ success: false, error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // --- 7. LINE Webhook 受付 API (/api/line/webhook) ---
+  if (pathname === "/api/line/webhook") {
+    if (req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("LINE Webhook Endpoint Ready");
+      return;
+    }
+
+    let bodyStr = "";
+    req.on("data", chunk => bodyStr += chunk);
+    req.on("end", () => {
+      try {
+        const body = bodyStr ? JSON.parse(bodyStr) : {};
+        const events = body.events || [];
+        const kv = readDevKv();
+
+        for (const ev of events) {
+          const source = ev.source || {};
+          const groupId = source.groupId || source.roomId || source.userId;
+          if (groupId) {
+            kv.detectedDestination = {
+              destinationId: groupId,
+              type: source.type || "unknown",
+              userId: source.userId || null,
+              timestamp: Date.now()
+            };
+            if (kv.lineConfig && !kv.lineConfig.to) {
+              kv.lineConfig.to = groupId;
+            }
+            writeDevKv(kv);
+          }
+        }
+      } catch (e) {}
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end("OK");
+    });
+    return;
+  }
+
   // --- 静的ファイル配信 ---
   let filePath = path.join(PUBLIC_DIR, pathname === "/" ? "index.html" : pathname);
   const ext = path.extname(filePath).toLowerCase();
@@ -303,5 +449,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.2.2 running at http://localhost:${PORT}`);
+  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.3.0 running at http://localhost:${PORT}`);
 });

@@ -1,15 +1,43 @@
 /**
- * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.2.2
+ * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.0
  * 
  * 機能:
  * 1. SwitchBot Open API プロキシ (/api/switchbot)
  * 2. クラウド設定共有 API (/api/sync/config) - カード並び順・色・外気温設定をKVで全端末同期
  * 3. 温度履歴クラウド蓄積 API (/api/sync/history) - 30分間隔データ蓄積・CSV出力対応
  * 4. 無人定期実行ステータス API (/api/sync/status) - 24時間稼働確認
- * 5. 無人定期実行 Cron Triggers (scheduled) - 30分おきに自動で各温度計データを無人記録
+ * 5. LINE Messaging API 連携 (/api/line/config, /api/line/test, /api/line/webhook)
+ * 6. 無人定期実行 Cron Triggers (scheduled) - 30分おき無人記録・定時サマリー＆緊急温度異常アラート
  */
 
 import { onRequestGet, onRequestPost, onRequestOptions, callSwitchBotApi, jsonResponse } from './functions/api/switchbot.js';
+
+/**
+ * LINE Messaging API プッシュ送信ヘルパー
+ */
+async function sendLinePushMessage(token, to, text) {
+  if (!token || !to || !text) return { success: false, error: "Missing token, to, or text" };
+  try {
+    const res = await fetch("https://api.line.me/v2/bot/message/push", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${token}`
+      },
+      body: JSON.stringify({
+        to: to,
+        messages: [{ type: "text", text: text }]
+      })
+    });
+    if (!res.ok) {
+      const errBody = await res.text();
+      return { success: false, status: res.status, error: errBody };
+    }
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+}
 
 export default {
   /**
@@ -164,6 +192,154 @@ export default {
       }
     }
 
+    // 5. LINE通知設定 API (/api/line/config)
+    if (pathname === "/api/line/config") {
+      if (!env.KUWAGATA_KV) {
+        return jsonResponse({ success: false, error: "KUWAGATA_KV がバインドされていません" }, 500);
+      }
+
+      if (request.method === "GET") {
+        try {
+          const raw = await env.KUWAGATA_KV.get("config:line");
+          const config = raw ? JSON.parse(raw) : null;
+          const detectedDestRaw = await env.KUWAGATA_KV.get("status:line_detected_destination");
+          const detectedDest = detectedDestRaw ? JSON.parse(detectedDestRaw) : null;
+
+          return jsonResponse({
+            success: true,
+            config: config,
+            detectedDestination: detectedDest
+          });
+        } catch (err) {
+          return jsonResponse({ success: false, error: err.message }, 500);
+        }
+      } else if (request.method === "POST") {
+        try {
+          const body = await request.json();
+          const { token, to, summaryEnabled, summaryHours, alertMaxTemp, alertMinTemp, alertCooldownMinutes } = body;
+
+          const lineConfig = {
+            token: (token || "").trim(),
+            to: (to || "").trim(),
+            summaryEnabled: summaryEnabled !== false,
+            summaryHours: Array.isArray(summaryHours) ? summaryHours : [8, 20],
+            alertMaxTemp: typeof alertMaxTemp === "number" ? alertMaxTemp : 18.5,
+            alertMinTemp: typeof alertMinTemp === "number" ? alertMinTemp : 14.5,
+            alertCooldownMinutes: typeof alertCooldownMinutes === "number" ? alertCooldownMinutes : 60,
+            updatedAt: Date.now()
+          };
+
+          await env.KUWAGATA_KV.put("config:line", JSON.stringify(lineConfig));
+          return jsonResponse({ success: true, message: "LINE通知設定を保存しました", config: lineConfig });
+        } catch (err) {
+          return jsonResponse({ success: false, error: err.message }, 500);
+        }
+      }
+      return new Response("Method not allowed", { status: 405 });
+    }
+
+    // 6. LINEテスト送信 API (/api/line/test)
+    if (pathname === "/api/line/test") {
+      if (!env.KUWAGATA_KV) {
+        return jsonResponse({ success: false, error: "KUWAGATA_KV がバインドされていません" }, 500);
+      }
+      if (request.method !== "POST") {
+        return new Response("Method not allowed", { status: 405 });
+      }
+
+      try {
+        const body = await request.json().catch(() => ({}));
+        let token = body.token;
+        let to = body.to;
+
+        if (!token || !to) {
+          const lineConfigRaw = await env.KUWAGATA_KV.get("config:line");
+          if (lineConfigRaw) {
+            const cfg = JSON.parse(lineConfigRaw);
+            token = token || cfg.token;
+            to = to || cfg.to;
+          }
+        }
+
+        if (!token || !to) {
+          return jsonResponse({ success: false, error: "アクセストークンまたは送信先IDが設定されていません" }, 400);
+        }
+
+        const testMsg = `🪲 クワガタ飼育室 LINE通知連携テスト\n───────────────\nLINE通知の疎通が正常に確認できました！\nこのグループへ定時サマリー（朝08:00/夜20:00）および緊急温度異常アラートが自動配信されます。`;
+        const result = await sendLinePushMessage(token, to, testMsg);
+        if (!result.success) {
+          return jsonResponse({ success: false, error: result.error || "LINE APIへの送信に失敗しました" }, 502);
+        }
+        return jsonResponse({ success: true, message: "LINEにテスト通知を送信しました" });
+      } catch (err) {
+        return jsonResponse({ success: false, error: err.message }, 500);
+      }
+    }
+
+    // 7. LINE Webhook 受付 API (/api/line/webhook) - グループID自動検出用
+    if (pathname === "/api/line/webhook") {
+      if (request.method === "GET") {
+        return new Response("LINE Webhook Endpoint Ready", { status: 200 });
+      }
+      if (request.method === "POST") {
+        try {
+          const body = await request.json().catch(() => ({}));
+          const events = body.events || [];
+
+          for (const ev of events) {
+            const source = ev.source || {};
+            const groupId = source.groupId || source.roomId || source.userId;
+
+            if (groupId && env.KUWAGATA_KV) {
+              const detectedInfo = {
+                destinationId: groupId,
+                type: source.type || "unknown",
+                userId: source.userId || null,
+                timestamp: Date.now()
+              };
+              await env.KUWAGATA_KV.put("status:line_detected_destination", JSON.stringify(detectedInfo));
+
+              // もしconfig:lineのtoが空なら自動でセット
+              const lineConfigRaw = await env.KUWAGATA_KV.get("config:line");
+              if (lineConfigRaw) {
+                const lineConfig = JSON.parse(lineConfigRaw);
+                if (!lineConfig.to) {
+                  lineConfig.to = groupId;
+                  await env.KUWAGATA_KV.put("config:line", JSON.stringify(lineConfig));
+                }
+              }
+
+              // 参加時(join)または「ID」発言時に返信
+              if (ev.type === "join" || (ev.type === "message" && ev.message?.text && (ev.message.text.includes("ID") || ev.message.text.includes("設定")))) {
+                const lineConfigRaw2 = await env.KUWAGATA_KV.get("config:line");
+                const lineCfg2 = lineConfigRaw2 ? JSON.parse(lineConfigRaw2) : null;
+                if (lineCfg2 && lineCfg2.token && ev.replyToken) {
+                  await fetch("https://api.line.me/v2/bot/message/reply", {
+                    method: "POST",
+                    headers: {
+                      "Content-Type": "application/json",
+                      "Authorization": `Bearer ${lineCfg2.token}`
+                    },
+                    body: JSON.stringify({
+                      replyToken: ev.replyToken,
+                      messages: [{
+                        type: "text",
+                        text: `🪲 クワガタ飼育室Botが認識しました！\n送信先ID: ${groupId}\nアプリの設定画面（⚙️）に自動反映されます。`
+                      }]
+                    })
+                  }).catch(() => {});
+                }
+              }
+            }
+          }
+          return new Response("OK", { status: 200 });
+        } catch (err) {
+          console.error("Webhook error:", err);
+          return new Response("OK", { status: 200 });
+        }
+      }
+    }
+
     // 静的アセットにヒットしなかった場合は 404
     return new Response("Not Found", { status: 404 });
   },
@@ -243,6 +419,141 @@ export default {
       await env.KUWAGATA_KV.put("history:temp_log", JSON.stringify(history));
       await env.KUWAGATA_KV.put("status:last_cron_run", now.getTime().toString());
 
+      // 5. 💬 LINE公式アカウント通知連携 (緊急アラート & 定時サマリー)
+      try {
+        const lineConfigRaw = await env.KUWAGATA_KV.get("config:line");
+        if (lineConfigRaw) {
+          const lineConfig = JSON.parse(lineConfigRaw);
+          const lineToken = lineConfig.token;
+          const lineTo = lineConfig.to;
+
+          if (lineToken && lineTo) {
+            const sharedRaw = await env.KUWAGATA_KV.get("config:shared");
+            const sharedConfig = sharedRaw ? JSON.parse(sharedRaw) : {};
+            const outdoorId = sharedConfig.outdoorMeterId || "";
+
+            // A. 緊急温度異常アラート判定
+            const alertMaxTemp = typeof lineConfig.alertMaxTemp === "number" ? lineConfig.alertMaxTemp : 18.5;
+            const alertMinTemp = typeof lineConfig.alertMinTemp === "number" ? lineConfig.alertMinTemp : 14.5;
+            const cooldownMs = (typeof lineConfig.alertCooldownMinutes === "number" ? lineConfig.alertCooldownMinutes : 60) * 60 * 1000;
+
+            let abnormalMeter = null;
+            let abnormalType = "";
+            let abnormalVal = 0;
+
+            let outdoorCurrentTemp = null;
+            if (outdoorId && readings[outdoorId] && typeof readings[outdoorId].temp === "number") {
+              outdoorCurrentTemp = readings[outdoorId].temp;
+            }
+
+            for (const [mId, r] of Object.entries(readings)) {
+              if (mId === outdoorId) continue;
+              if (typeof r.temp !== "number") continue;
+              if (r.temp > alertMaxTemp) {
+                const dObj = meters.find(m => m.deviceId === mId);
+                abnormalMeter = dObj ? dObj.deviceName : "室内棚";
+                abnormalType = "上限超過";
+                abnormalVal = r.temp;
+                break;
+              } else if (r.temp < alertMinTemp) {
+                const dObj = meters.find(m => m.deviceId === mId);
+                abnormalMeter = dObj ? dObj.deviceName : "室内棚";
+                abnormalType = "下限未満";
+                abnormalVal = r.temp;
+                break;
+              }
+            }
+
+            if (abnormalMeter) {
+              const lastAlertTsRaw = await env.KUWAGATA_KV.get("status:line_alert_last_sent");
+              const lastAlertTs = lastAlertTsRaw ? parseInt(lastAlertTsRaw, 10) : 0;
+              if (!lastAlertTs || (now.getTime() - lastAlertTs) >= cooldownMs) {
+                const outStr = outdoorCurrentTemp !== null ? `${outdoorCurrentTemp.toFixed(1)}℃` : "--";
+                const limitVal = abnormalType === "上限超過" ? alertMaxTemp : alertMinTemp;
+                const alertMsg = `🚨【室温異常】${abnormalMeter} ${abnormalVal.toFixed(1)}℃\n（設定${limitVal}℃ 超過 / 外気温 ${outStr}）\nhttps://kuwagata-room-monitor2.heshikoumai.workers.dev/`;
+                await sendLinePushMessage(lineToken, lineTo, alertMsg);
+                await env.KUWAGATA_KV.put("status:line_alert_last_sent", now.getTime().toString());
+              }
+            }
+
+            // B. 超シンプル定時サマリー判定（朝 08:00 / 夜 20:00）
+            const summaryEnabled = lineConfig.summaryEnabled !== false;
+            const summaryHours = Array.isArray(lineConfig.summaryHours) ? lineConfig.summaryHours : [8, 20];
+            const currentJstHour = jst.getUTCHours();
+            const currentJstMin = jst.getUTCMinutes();
+
+            // 設定時刻の最初の実行枠（0〜29分）で実行
+            if (summaryEnabled && summaryHours.includes(currentJstHour) && currentJstMin < 30) {
+              const todayHourKey = `status:line_summary_${jst.getUTCFullYear()}${mm}${dd}_${hh}`;
+              const alreadySent = await env.KUWAGATA_KV.get(todayHourKey);
+              if (!alreadySent) {
+                // 直近12時間（12時間前以降）の履歴を抽出
+                const twelveHoursAgo = now.getTime() - (12 * 60 * 60 * 1000);
+                const recentRecords = history.filter(h => (h.ts || h.time || 0) >= twelveHoursAgo);
+
+                if (recentRecords.length > 0) {
+                  let indoorTemps = [];
+                  let outdoorTemps = [];
+
+                  recentRecords.forEach(rec => {
+                    const recEpoch = rec.ts || rec.time || 0;
+                    const recDate = new Date(recEpoch + (9 * 60 * 60 * 1000));
+                    const recTimeStr = `${String(recDate.getUTCHours()).padStart(2, '0')}:${String(recDate.getUTCMinutes()).padStart(2, '0')}`;
+
+                    if (rec.readings) {
+                      let recIndoorSum = 0;
+                      let recIndoorCount = 0;
+                      for (const [devId, val] of Object.entries(rec.readings)) {
+                        if (devId === outdoorId) {
+                          if (typeof val.temp === "number") {
+                            outdoorTemps.push({ temp: val.temp, time: recTimeStr });
+                          }
+                        } else {
+                          if (typeof val.temp === "number") {
+                            recIndoorSum += val.temp;
+                            recIndoorCount++;
+                          }
+                        }
+                      }
+                      if (recIndoorCount > 0) {
+                        indoorTemps.push({ temp: recIndoorSum / recIndoorCount, time: recTimeStr });
+                      }
+                    }
+                  });
+
+                  if (indoorTemps.length > 0) {
+                    const indoorAvg = (indoorTemps.reduce((acc, t) => acc + t.temp, 0) / indoorTemps.length).toFixed(1);
+                    let indoorMin = indoorTemps[0];
+                    let indoorMax = indoorTemps[0];
+                    indoorTemps.forEach(t => {
+                      if (t.temp < indoorMin.temp) indoorMin = t;
+                      if (t.temp > indoorMax.temp) indoorMax = t;
+                    });
+
+                    let outdoorStr = "【外気温平均】--\n（最低 -- / 最高 --）";
+                    if (outdoorTemps.length > 0) {
+                      const outAvg = (outdoorTemps.reduce((acc, t) => acc + t.temp, 0) / outdoorTemps.length).toFixed(1);
+                      let outMin = outdoorTemps[0];
+                      let outMax = outdoorTemps[0];
+                      outdoorTemps.forEach(t => {
+                        if (t.temp < outMin.temp) outMin = t;
+                        if (t.temp > outMax.temp) outMax = t;
+                      });
+                      outdoorStr = `【外気温平均】${outAvg}℃\n（最低 ${outMin.temp.toFixed(1)}℃ ${outMin.time} / 最高 ${outMax.temp.toFixed(1)}℃ ${outMax.time}）`;
+                    }
+
+                    const reportMsg = `🪲 飼育室 定時 (${hh}:00)\n【室内平均】${indoorAvg}℃\n（最低 ${indoorMin.temp.toFixed(1)}℃ ${indoorMin.time} / 最高 ${indoorMax.temp.toFixed(1)}℃ ${indoorMax.time}）\n${outdoorStr}`;
+                    await sendLinePushMessage(lineToken, lineTo, reportMsg);
+                    await env.KUWAGATA_KV.put(todayHourKey, "sent", { expirationTtl: 86400 });
+                  }
+                }
+              }
+            }
+          }
+        }
+      } catch (lineErr) {
+        console.error("Scheduled cron LINE error:", lineErr);
+      }
     } catch (err) {
       console.error("Scheduled cron error:", err);
     }
