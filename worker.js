@@ -1,13 +1,13 @@
 /**
- * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.0
+ * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.1
  * 
  * 機能:
  * 1. SwitchBot Open API プロキシ (/api/switchbot)
  * 2. クラウド設定共有 API (/api/sync/config) - カード並び順・色・外気温設定をKVで全端末同期
  * 3. 温度履歴クラウド蓄積 API (/api/sync/history) - 30分間隔データ蓄積・CSV出力対応
  * 4. 無人定期実行ステータス API (/api/sync/status) - 24時間稼働確認
- * 5. LINE Messaging API 連携 (/api/line/config, /api/line/test, /api/line/webhook)
- * 6. 無人定期実行 Cron Triggers (scheduled) - 30分おき無人記録・定時サマリー＆緊急温度異常アラート
+ * 5. LINE Messaging API 連携 (/api/line/config, /api/line/test, /api/line/webhook) - 定時/警告グループ分離対応
+ * 6. 無人定期実行 Cron Triggers (scheduled) - 30分おき無人記録・定時サマリー＆緊急温度異常アラート個別配信
  */
 
 import { onRequestGet, onRequestPost, onRequestOptions, callSwitchBotApi, jsonResponse } from './functions/api/switchbot.js';
@@ -216,11 +216,16 @@ export default {
       } else if (request.method === "POST") {
         try {
           const body = await request.json();
-          const { token, to, summaryEnabled, summaryHours, alertMaxTemp, alertMinTemp, alertCooldownMinutes } = body;
+          const { token, to, summaryTo, alertTo, summaryEnabled, summaryHours, alertMaxTemp, alertMinTemp, alertCooldownMinutes } = body;
+
+          const sTo = (summaryTo || to || "").trim();
+          const aTo = (alertTo || to || "").trim();
 
           const lineConfig = {
             token: (token || "").trim(),
-            to: (to || "").trim(),
+            to: sTo || aTo, // 互換性保持
+            summaryTo: sTo,
+            alertTo: aTo,
             summaryEnabled: summaryEnabled !== false,
             summaryHours: Array.isArray(summaryHours) ? summaryHours : [8, 20],
             alertMaxTemp: typeof alertMaxTemp === "number" ? alertMaxTemp : 18.5,
@@ -251,13 +256,18 @@ export default {
         const body = await request.json().catch(() => ({}));
         let token = body.token;
         let to = body.to;
+        const testType = body.type || "general"; // "summary" | "alert" | "general"
 
         if (!token || !to) {
           const lineConfigRaw = await env.KUWAGATA_KV.get("config:line");
           if (lineConfigRaw) {
             const cfg = JSON.parse(lineConfigRaw);
             token = token || cfg.token;
-            to = to || cfg.to;
+            if (!to) {
+              if (testType === "summary") to = cfg.summaryTo || cfg.to;
+              else if (testType === "alert") to = cfg.alertTo || cfg.to;
+              else to = cfg.to || cfg.summaryTo || cfg.alertTo;
+            }
           }
         }
 
@@ -265,12 +275,20 @@ export default {
           return jsonResponse({ success: false, error: "アクセストークンまたは送信先IDが設定されていません" }, 400);
         }
 
-        const testMsg = `🪲 クワガタ飼育室 LINE通知連携テスト\n───────────────\nLINE通知の疎通が正常に確認できました！\nこのグループへ定時サマリー（朝08:00/夜20:00）および緊急温度異常アラートが自動配信されます。`;
+        let testMsg = "";
+        if (testType === "alert") {
+          testMsg = `🚨【室温異常テスト】棚1 (上段) 18.9℃\n（設定上限 18.5℃ 超過 / 外気温 32.1℃）\n※ このグループへ飼育室の温度異常アラートが即座に配信されます（通知オン推奨）。`;
+        } else if (testType === "summary") {
+          testMsg = `🪲 飼育室 定時テスト (08:00)\n【室内平均】15.6℃\n（最低 14.8℃ 02:51 / 最高 16.1℃ 14:32）\n【外気温平均】26.4℃\n（最低 22.1℃ 04:15 / 最高 32.8℃ 13:40）\n※ このグループへ朝夕の定時レポートが配信されます（通知オフ推奨）。`;
+        } else {
+          testMsg = `🪲 クワガタ飼育室 LINE通知連携テスト\n───────────────\nLINE通知の疎通が正常に確認できました！\nこのグループへ自動通知が配信されます。`;
+        }
+
         const result = await sendLinePushMessage(token, to, testMsg);
         if (!result.success) {
           return jsonResponse({ success: false, error: result.error || "LINE APIへの送信に失敗しました" }, 502);
         }
-        return jsonResponse({ success: true, message: "LINEにテスト通知を送信しました" });
+        return jsonResponse({ success: true, message: "LINEにテスト通知を送信しました", destination: to, type: testType });
       } catch (err) {
         return jsonResponse({ success: false, error: err.message }, 500);
       }
@@ -425,14 +443,15 @@ export default {
         if (lineConfigRaw) {
           const lineConfig = JSON.parse(lineConfigRaw);
           const lineToken = lineConfig.token;
-          const lineTo = lineConfig.to;
+          const alertTo = lineConfig.alertTo || lineConfig.to;
+          const summaryTo = lineConfig.summaryTo || lineConfig.to;
 
-          if (lineToken && lineTo) {
+          if (lineToken && (alertTo || summaryTo)) {
             const sharedRaw = await env.KUWAGATA_KV.get("config:shared");
             const sharedConfig = sharedRaw ? JSON.parse(sharedRaw) : {};
             const outdoorId = sharedConfig.outdoorMeterId || "";
 
-            // A. 緊急温度異常アラート判定
+            // A. 緊急温度異常アラート判定（緊急アラート用グループへ送信）
             const alertMaxTemp = typeof lineConfig.alertMaxTemp === "number" ? lineConfig.alertMaxTemp : 18.5;
             const alertMinTemp = typeof lineConfig.alertMinTemp === "number" ? lineConfig.alertMinTemp : 14.5;
             const cooldownMs = (typeof lineConfig.alertCooldownMinutes === "number" ? lineConfig.alertCooldownMinutes : 60) * 60 * 1000;
@@ -464,26 +483,26 @@ export default {
               }
             }
 
-            if (abnormalMeter) {
+            if (abnormalMeter && alertTo) {
               const lastAlertTsRaw = await env.KUWAGATA_KV.get("status:line_alert_last_sent");
               const lastAlertTs = lastAlertTsRaw ? parseInt(lastAlertTsRaw, 10) : 0;
               if (!lastAlertTs || (now.getTime() - lastAlertTs) >= cooldownMs) {
                 const outStr = outdoorCurrentTemp !== null ? `${outdoorCurrentTemp.toFixed(1)}℃` : "--";
                 const limitVal = abnormalType === "上限超過" ? alertMaxTemp : alertMinTemp;
                 const alertMsg = `🚨【室温異常】${abnormalMeter} ${abnormalVal.toFixed(1)}℃\n（設定${limitVal}℃ 超過 / 外気温 ${outStr}）\nhttps://kuwagata-room-monitor2.heshikoumai.workers.dev/`;
-                await sendLinePushMessage(lineToken, lineTo, alertMsg);
+                await sendLinePushMessage(lineToken, alertTo, alertMsg);
                 await env.KUWAGATA_KV.put("status:line_alert_last_sent", now.getTime().toString());
               }
             }
 
-            // B. 超シンプル定時サマリー判定（朝 08:00 / 夜 20:00）
+            // B. 超シンプル定時サマリー判定（定時ログ用グループへ送信: 朝 08:00 / 夜 20:00）
             const summaryEnabled = lineConfig.summaryEnabled !== false;
             const summaryHours = Array.isArray(lineConfig.summaryHours) ? lineConfig.summaryHours : [8, 20];
             const currentJstHour = jst.getUTCHours();
             const currentJstMin = jst.getUTCMinutes();
 
             // 設定時刻の最初の実行枠（0〜29分）で実行
-            if (summaryEnabled && summaryHours.includes(currentJstHour) && currentJstMin < 30) {
+            if (summaryEnabled && summaryTo && summaryHours.includes(currentJstHour) && currentJstMin < 30) {
               const todayHourKey = `status:line_summary_${jst.getUTCFullYear()}${mm}${dd}_${hh}`;
               const alreadySent = await env.KUWAGATA_KV.get(todayHourKey);
               if (!alreadySent) {
@@ -543,7 +562,7 @@ export default {
                     }
 
                     const reportMsg = `🪲 飼育室 定時 (${hh}:00)\n【室内平均】${indoorAvg}℃\n（最低 ${indoorMin.temp.toFixed(1)}℃ ${indoorMin.time} / 最高 ${indoorMax.temp.toFixed(1)}℃ ${indoorMax.time}）\n${outdoorStr}`;
-                    await sendLinePushMessage(lineToken, lineTo, reportMsg);
+                    await sendLinePushMessage(lineToken, summaryTo, reportMsg);
                     await env.KUWAGATA_KV.put(todayHourKey, "sent", { expirationTtl: 86400 });
                   }
                 }

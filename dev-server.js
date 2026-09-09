@@ -1,5 +1,5 @@
 /**
- * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.3.0
+ * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.3.1
  * 外部npmパッケージ不要（Node.js標準機能のみで動作）
  * 
  * 機能:
@@ -8,7 +8,7 @@
  * - クラウド設定共有エミュレーション (/api/sync/config)
  * - 温度履歴蓄積エミュレーション (/api/sync/history) - 30分間隔対応
  * - 24時間無人記録ステータス確認エミュレーション (/api/sync/status)
- * - LINE通知設定・テスト・Webhookエミュレーション (/api/line/*)
+ * - LINE通知設定・テスト・Webhookエミュレーション (/api/line/*) - 定時/警告個別送信
  */
 
 import http from "node:http";
@@ -297,9 +297,14 @@ const server = http.createServer(async (req, res) => {
       req.on("end", () => {
         try {
           const body = JSON.parse(bodyStr);
+          const sTo = (body.summaryTo || body.to || "").trim();
+          const aTo = (body.alertTo || body.to || "").trim();
+
           kv.lineConfig = {
             token: (body.token || "").trim(),
-            to: (body.to || "").trim(),
+            to: sTo || aTo,
+            summaryTo: sTo,
+            alertTo: aTo,
             summaryEnabled: body.summaryEnabled !== false,
             summaryHours: Array.isArray(body.summaryHours) ? body.summaryHours : [8, 20],
             alertMaxTemp: typeof body.alertMaxTemp === "number" ? body.alertMaxTemp : 18.5,
@@ -333,8 +338,15 @@ const server = http.createServer(async (req, res) => {
       try {
         const kv = readDevKv();
         const body = bodyStr ? JSON.parse(bodyStr) : {};
+        const testType = body.type || "general"; // "summary" | "alert" | "general"
         const token = (body.token || (kv.lineConfig && kv.lineConfig.token) || "").trim();
-        const to = (body.to || (kv.lineConfig && kv.lineConfig.to) || "").trim();
+        let to = (body.to || "").trim();
+
+        if (!to && kv.lineConfig) {
+          if (testType === "summary") to = kv.lineConfig.summaryTo || kv.lineConfig.to;
+          else if (testType === "alert") to = kv.lineConfig.alertTo || kv.lineConfig.to;
+          else to = kv.lineConfig.to || kv.lineConfig.summaryTo || kv.lineConfig.alertTo;
+        }
 
         if (!token || !to) {
           res.writeHead(400, { "Content-Type": "application/json" });
@@ -342,7 +354,14 @@ const server = http.createServer(async (req, res) => {
           return;
         }
 
-        const testMsg = `🪲 クワガタ飼育室 LINE通知連携テスト\n───────────────\nLINE通知の疎通が正常に確認できました！\nこのグループへ定時サマリー（朝08:00/夜20:00）および緊急温度異常アラートが自動配信されます。`;
+        let testMsg = "";
+        if (testType === "alert") {
+          testMsg = `🚨【室温異常テスト】棚1 (上段) 18.9℃\n（設定上限 18.5℃ 超過 / 外気温 32.1℃）\n※ このグループへ飼育室の温度異常アラートが即座に配信されます（通知オン推奨）。`;
+        } else if (testType === "summary") {
+          testMsg = `🪲 飼育室 定時テスト (08:00)\n【室内平均】15.6℃\n（最低 14.8℃ 02:51 / 最高 16.1℃ 14:32）\n【外気温平均】26.4℃\n（最低 22.1℃ 04:15 / 最高 32.8℃ 13:40）\n※ このグループへ朝夕の定時レポートが配信されます（通知オフ推奨）。`;
+        } else {
+          testMsg = `🪲 クワガタ飼育室 LINE通知連携テスト\n───────────────\nLINE通知の疎通が正常に確認できました！\nこのグループへ自動通知が配信されます。`;
+        }
         
         // 外部LINE APIへ送信
         const lineReq = https.request({
@@ -359,7 +378,7 @@ const server = http.createServer(async (req, res) => {
           lineRes.on("end", () => {
             if (lineRes.statusCode === 200) {
               res.writeHead(200, { "Content-Type": "application/json" });
-              res.end(JSON.stringify({ success: true, message: "LINEにテスト通知を送信しました" }));
+              res.end(JSON.stringify({ success: true, message: "LINEにテスト通知を送信しました", destination: to, type: testType }));
             } else {
               res.writeHead(502, { "Content-Type": "application/json" });
               res.end(JSON.stringify({ success: false, error: lineBody || "LINE APIエラー" }));
@@ -449,5 +468,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.3.0 running at http://localhost:${PORT}`);
+  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.3.1 running at http://localhost:${PORT}`);
 });

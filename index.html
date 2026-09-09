@@ -18,7 +18,7 @@
     <div class="auth-card">
       <div class="auth-icon">🪲</div>
       <h2>クワガタ飼育室 環境監視</h2>
-      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.3.0 Security Gate</div>
+      <div class="auth-version-badge" style="font-size: 0.75rem; color: var(--accent-blue); font-weight: 600; margin-bottom: 6px;">v3.3.1 Security Gate</div>
       <p class="auth-desc">セキュリティ保護されています。<br>合言葉（パスコード）を入力してください。</p>
       
       <form id="authForm">
@@ -39,7 +39,7 @@
         <span class="brand-icon">🪲</span>
         <div>
           <h1>クワガタ飼育室 環境監視</h1>
-          <div class="app-sub-title">Kuwagata Room Monitor v3.3.0</div>
+          <div class="app-sub-title">Kuwagata Room Monitor v3.3.1</div>
         </div>
       </div>
       <div class="header-actions">
@@ -418,15 +418,35 @@
             <input type="password" id="lineTokenInput" class="form-input" placeholder="LINE Developersで発行したアクセストークン">
           </div>
 
-          <div class="form-group" style="margin-bottom: 10px;">
+          <!-- 1. 定時サマリー用 グループID -->
+          <div class="form-group" style="margin-bottom: 12px; background: rgba(56, 189, 248, 0.05); padding: 10px; border-radius: 6px; border: 1px solid rgba(56, 189, 248, 0.2);">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-              <label style="font-size: 0.75rem; color: var(--text-muted);">送信先ID（グループID または ユーザーID）</label>
-              <button type="button" id="btnApplyDetectedLineDest" class="btn hidden" style="padding: 1px 6px; font-size: 0.7rem; color: var(--accent-blue);" title="Webhookで検出された最新IDを自動入力">検出IDを適用</button>
+              <label style="font-size: 0.75rem; font-weight: 600; color: var(--accent-blue);">⏰ ① 定時サマリー用 送信先ID（朝08:00 / 夜20:00）</label>
+              <div style="display: flex; gap: 4px;">
+                <button type="button" id="btnApplyDetectedToSummary" class="btn hidden" style="padding: 1px 6px; font-size: 0.7rem; color: var(--accent-blue);" title="Webhookで検出された最新IDを自動入力">検出IDを適用</button>
+                <button type="button" id="btnTestSummaryNotify" class="btn" style="padding: 1px 8px; font-size: 0.7rem; background: rgba(56, 189, 248, 0.15); color: var(--accent-blue); border-color: rgba(56, 189, 248, 0.4);">🔔 定時テスト</button>
+              </div>
             </div>
-            <input type="text" id="lineToInput" class="form-input" placeholder="例: C12345678... または U12345678...">
-            <div id="lineDetectedDestInfo" style="font-size: 0.72rem; color: var(--accent-blue); margin-top: 3px; display: none;">
-              🤖 最新検出ID: <span id="lineDetectedDestText"></span>
+            <input type="text" id="lineSummaryToInput" class="form-input" placeholder="例: C12345678... (通知OFF推奨グループ)">
+            <p style="font-size: 0.7rem; color: var(--text-muted); margin-top: 3px; margin-bottom: 0;">※LINEアプリ側で「通知オフ」にしておくと、静かに推移履歴を蓄積できます。</p>
+          </div>
+
+          <!-- 2. 緊急アラート用 グループID -->
+          <div class="form-group" style="margin-bottom: 12px; background: rgba(239, 68, 68, 0.05); padding: 10px; border-radius: 6px; border: 1px solid rgba(239, 68, 68, 0.2);">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+              <label style="font-size: 0.75rem; font-weight: 600; color: var(--accent-red);">🚨 ② 緊急アラート用 送信先ID（異常時即時）</label>
+              <div style="display: flex; gap: 4px;">
+                <button type="button" id="btnApplyDetectedToAlert" class="btn hidden" style="padding: 1px 6px; font-size: 0.7rem; color: var(--accent-red);" title="Webhookで検出された最新IDを自動入力">検出IDを適用</button>
+                <button type="button" id="btnTestAlertNotify" class="btn" style="padding: 1px 8px; font-size: 0.7rem; background: rgba(239, 68, 68, 0.15); color: var(--accent-red); border-color: rgba(239, 68, 68, 0.4);">🚨 警報テスト</button>
+              </div>
             </div>
+            <input type="text" id="lineAlertToInput" class="form-input" placeholder="例: C87654321... (通知ON推奨グループ)">
+            <p style="font-size: 0.7rem; color: var(--text-muted); margin-top: 3px; margin-bottom: 0;">※LINEアプリ側で「通知オン」にしておくことで、緊急事態に即座に気づけます。</p>
+          </div>
+
+          <!-- Webhook自動検出ID表示 -->
+          <div id="lineDetectedDestInfo" style="font-size: 0.72rem; color: var(--accent-blue); margin-bottom: 10px; padding: 6px 8px; background: rgba(56, 189, 248, 0.08); border-radius: 4px; display: none;">
+            🤖 最新検出ID: <strong id="lineDetectedDestText"></strong> （上の「検出IDを適用」ボタンで入力できます）
           </div>
 
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
@@ -454,20 +474,21 @@
             </label>
           </div>
 
-          <div style="display: flex; gap: 8px; margin-top: 10px;">
-            <button type="button" id="btnSaveLineConfig" class="btn" style="flex: 1; font-size: 0.8rem;">💾 LINE設定を保存</button>
-            <button type="button" id="btnTestLineNotify" class="btn btn-primary" style="flex: 1; font-size: 0.8rem;">🔔 LINEテスト送信</button>
+          <div style="margin-top: 10px;">
+            <button type="button" id="btnSaveLineConfig" class="btn btn-primary" style="width: 100%; font-size: 0.85rem; padding: 7px 12px;">💾 LINE通知設定を保存</button>
           </div>
         </div>
 
         <details style="font-size: 0.75rem; color: var(--text-muted); background: var(--bg-primary); padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border-color);">
           <summary style="cursor: pointer; color: var(--accent-blue); font-weight: 600;">
-            💡 LINEグループIDの簡単な調べ方（Webhook連携）
+            💡 LINEグループIDの簡単な調べ方（2つのグループ設定手順）
           </summary>
           <div style="margin-top: 6px; line-height: 1.5;">
             1. LINE DevelopersのMessaging API設定で「Webhook URL」に下記URLを登録し、「Webhookの利用」をONにします：<br>
             <code style="background: rgba(0,0,0,0.2); padding: 2px 4px; border-radius: 4px; font-size: 0.7rem; word-break: break-all; color: var(--text-primary);">https://kuwagata-room-monitor2.heshikoumai.workers.dev/api/line/webhook</code><br>
-            2. LINEグループにBotを招待してグループ内で「設定」と投稿すると、BotがグループIDを自動認識し、本画面に「検出IDを適用」ボタンが表示されます。
+            2. <strong>定時用グループ</strong>を作成してBotを招待し、グループ内で「設定」と発言 ➔ ここに検出IDが表示されるので「①定時用」の「検出IDを適用」をクリック。<br>
+            3. <strong>警告用グループ</strong>を作成してBotを招待し、グループ内で「設定」と発言 ➔ 表示された検出IDを「②警告用」の「検出IDを適用」をクリック。<br>
+            4. 最後に「💾 LINE通知設定を保存」ボタンを押してください。
           </div>
         </details>
       </div>
@@ -523,6 +544,6 @@
   <!-- 🍞 クリップボードコピー等のトースト通知コンテナ -->
   <div id="toastContainer" class="toast-container"></div>
 
-  <script src="app.js?v=3.3.0"></script>
+  <script src="app.js?v=3.3.1"></script>
 </body>
 </html>

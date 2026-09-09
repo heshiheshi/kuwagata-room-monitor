@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.3.0
- * LINE公式アカウントMessaging API連携（超シンプル定時サマリー＆緊急温度異常アラート）
+ * Kuwagata Room Monitor - Main Application Logic v3.3.1
+ * LINE公式アカウントMessaging API連携（定時サマリー＆緊急温度異常アラート 個別グループ配信対応）
  */
 
-const APP_VERSION = "v3.3.0";
+const APP_VERSION = "v3.3.1";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -395,13 +395,16 @@ const elements = {
 
   // 💬 LINE通知連携要素
   lineTokenInput: document.getElementById("lineTokenInput"),
-  lineToInput: document.getElementById("lineToInput"),
+  lineSummaryToInput: document.getElementById("lineSummaryToInput"),
+  lineAlertToInput: document.getElementById("lineAlertToInput"),
   lineAlertMaxInput: document.getElementById("lineAlertMaxInput"),
   lineAlertMinInput: document.getElementById("lineAlertMinInput"),
   lineSummaryEnabledInput: document.getElementById("lineSummaryEnabledInput"),
   btnSaveLineConfig: document.getElementById("btnSaveLineConfig"),
-  btnTestLineNotify: document.getElementById("btnTestLineNotify"),
-  btnApplyDetectedLineDest: document.getElementById("btnApplyDetectedLineDest"),
+  btnTestSummaryNotify: document.getElementById("btnTestSummaryNotify"),
+  btnTestAlertNotify: document.getElementById("btnTestAlertNotify"),
+  btnApplyDetectedToSummary: document.getElementById("btnApplyDetectedToSummary"),
+  btnApplyDetectedToAlert: document.getElementById("btnApplyDetectedToAlert"),
   lineDetectedDestInfo: document.getElementById("lineDetectedDestInfo"),
   lineDetectedDestText: document.getElementById("lineDetectedDestText"),
   lineStatusBadge: document.getElementById("lineStatusBadge"),
@@ -888,14 +891,29 @@ function setupEventListeners() {
   if (elements.btnSaveLineConfig) {
     elements.btnSaveLineConfig.addEventListener("click", () => saveLineConfig(true));
   }
-  if (elements.btnTestLineNotify) {
-    elements.btnTestLineNotify.addEventListener("click", testLineNotification);
+  if (elements.btnTestSummaryNotify) {
+    elements.btnTestSummaryNotify.addEventListener("click", () => testLineNotification("summary"));
   }
-  if (elements.btnApplyDetectedLineDest) {
-    elements.btnApplyDetectedLineDest.addEventListener("click", () => {
+  if (elements.btnTestAlertNotify) {
+    elements.btnTestAlertNotify.addEventListener("click", () => testLineNotification("alert"));
+  }
+  if (elements.btnApplyDetectedToSummary) {
+    elements.btnApplyDetectedToSummary.addEventListener("click", () => {
       if (appState.detectedLineDest && appState.detectedLineDest.destinationId) {
-        elements.lineToInput.value = appState.detectedLineDest.destinationId;
-        showCopyToast(appState.detectedLineDest.destinationId, "送信先IDにセットしました");
+        if (elements.lineSummaryToInput) {
+          elements.lineSummaryToInput.value = appState.detectedLineDest.destinationId;
+          showCopyToast(appState.detectedLineDest.destinationId, "定時サマリー送信先にセットしました");
+        }
+      }
+    });
+  }
+  if (elements.btnApplyDetectedToAlert) {
+    elements.btnApplyDetectedToAlert.addEventListener("click", () => {
+      if (appState.detectedLineDest && appState.detectedLineDest.destinationId) {
+        if (elements.lineAlertToInput) {
+          elements.lineAlertToInput.value = appState.detectedLineDest.destinationId;
+          showCopyToast(appState.detectedLineDest.destinationId, "緊急アラート送信先にセットしました");
+        }
       }
     });
   }
@@ -1347,8 +1365,13 @@ async function fetchLineConfig() {
         if (elements.lineTokenInput && data.config.token) {
           elements.lineTokenInput.value = data.config.token;
         }
-        if (elements.lineToInput && data.config.to) {
-          elements.lineToInput.value = data.config.to;
+        const summaryTo = data.config.summaryTo || data.config.to || "";
+        const alertTo = data.config.alertTo || data.config.to || "";
+        if (elements.lineSummaryToInput) {
+          elements.lineSummaryToInput.value = summaryTo;
+        }
+        if (elements.lineAlertToInput) {
+          elements.lineAlertToInput.value = alertTo;
         }
         if (elements.lineAlertMaxInput && typeof data.config.alertMaxTemp === "number") {
           elements.lineAlertMaxInput.value = data.config.alertMaxTemp;
@@ -1368,16 +1391,20 @@ async function fetchLineConfig() {
           elements.lineDetectedDestText.textContent = data.detectedDestination.destinationId;
           elements.lineDetectedDestInfo.style.display = "block";
         }
-        if (elements.btnApplyDetectedLineDest) {
-          elements.btnApplyDetectedLineDest.classList.remove("hidden");
+        if (elements.btnApplyDetectedToSummary) {
+          elements.btnApplyDetectedToSummary.classList.remove("hidden");
+        }
+        if (elements.btnApplyDetectedToAlert) {
+          elements.btnApplyDetectedToAlert.classList.remove("hidden");
         }
       }
 
       // バッジ表示の更新
       if (elements.lineStatusBadge) {
         const hasToken = elements.lineTokenInput && elements.lineTokenInput.value.trim();
-        const hasTo = elements.lineToInput && elements.lineToInput.value.trim();
-        if (hasToken && hasTo) {
+        const hasSummary = elements.lineSummaryToInput && elements.lineSummaryToInput.value.trim();
+        const hasAlert = elements.lineAlertToInput && elements.lineAlertToInput.value.trim();
+        if (hasToken && (hasSummary || hasAlert)) {
           elements.lineStatusBadge.textContent = "● 連携設定済";
           elements.lineStatusBadge.style.color = "#10b981";
           elements.lineStatusBadge.style.background = "rgba(16, 185, 129, 0.12)";
@@ -1398,12 +1425,13 @@ async function fetchLineConfig() {
  */
 async function saveLineConfig(isManual = false) {
   const token = elements.lineTokenInput ? elements.lineTokenInput.value.trim() : "";
-  const to = elements.lineToInput ? elements.lineToInput.value.trim() : "";
+  const summaryTo = elements.lineSummaryToInput ? elements.lineSummaryToInput.value.trim() : "";
+  const alertTo = elements.lineAlertToInput ? elements.lineAlertToInput.value.trim() : "";
   const alertMax = elements.lineAlertMaxInput ? parseFloat(elements.lineAlertMaxInput.value) : 18.5;
   const alertMin = elements.lineAlertMinInput ? parseFloat(elements.lineAlertMinInput.value) : 14.5;
   const summaryEnabled = elements.lineSummaryEnabledInput ? elements.lineSummaryEnabledInput.checked : true;
 
-  if (isManual && (!token || !to)) {
+  if (isManual && (!token || (!summaryTo && !alertTo))) {
     if (!confirm("アクセストークンまたは送信先IDが入力されていません。このまま保存しますか？")) {
       return;
     }
@@ -1411,7 +1439,9 @@ async function saveLineConfig(isManual = false) {
 
   const payload = {
     token: token,
-    to: to,
+    to: summaryTo || alertTo, // 互換用
+    summaryTo: summaryTo,
+    alertTo: alertTo,
     alertMaxTemp: isNaN(alertMax) ? 18.5 : alertMax,
     alertMinTemp: isNaN(alertMin) ? 14.5 : alertMin,
     summaryEnabled: summaryEnabled,
@@ -1431,14 +1461,15 @@ async function saveLineConfig(isManual = false) {
       localStorage.setItem(STORAGE_KEYS.LINE_CONFIG, JSON.stringify(payload));
       logger.add("success", "LINE通知設定をクラウドに保存しました", {
         hasToken: !!token,
-        to: to,
+        summaryTo: summaryTo,
+        alertTo: alertTo,
         alertMax: payload.alertMaxTemp,
         alertMin: payload.alertMinTemp,
         summaryEnabled: payload.summaryEnabled
       });
 
       if (elements.lineStatusBadge) {
-        if (token && to) {
+        if (token && (summaryTo || alertTo)) {
           elements.lineStatusBadge.textContent = "● 連携設定済";
           elements.lineStatusBadge.style.color = "#10b981";
           elements.lineStatusBadge.style.background = "rgba(16, 185, 129, 0.12)";
@@ -1462,46 +1493,65 @@ async function saveLineConfig(isManual = false) {
 }
 
 /**
- * 🔔 LINEテスト送信
+ * 🔔 LINEテスト送信（定時サマリー用 または 緊急アラート用）
  */
-async function testLineNotification() {
+async function testLineNotification(type = "summary") {
   const token = elements.lineTokenInput ? elements.lineTokenInput.value.trim() : "";
-  const to = elements.lineToInput ? elements.lineToInput.value.trim() : "";
+  let to = "";
+  let targetLabel = "";
+  let targetBtn = null;
 
-  if (!token || !to) {
-    alert("アクセストークンと送信先IDの両方を入力してください。");
+  if (type === "summary") {
+    to = elements.lineSummaryToInput ? elements.lineSummaryToInput.value.trim() : "";
+    if (!to && elements.lineAlertToInput) to = elements.lineAlertToInput.value.trim();
+    targetLabel = "① 定時サマリー用グループ";
+    targetBtn = elements.btnTestSummaryNotify;
+  } else {
+    to = elements.lineAlertToInput ? elements.lineAlertToInput.value.trim() : "";
+    if (!to && elements.lineSummaryToInput) to = elements.lineSummaryToInput.value.trim();
+    targetLabel = "② 緊急アラート用グループ";
+    targetBtn = elements.btnTestAlertNotify;
+  }
+
+  if (!token) {
+    alert("チャンネルアクセストークンを入力してください。");
+    return;
+  }
+  if (!to) {
+    alert(`${targetLabel}の送信先IDを入力してください。\n（グループにBotを招待して「設定」と投稿すると自動認識されます）`);
     return;
   }
 
-  if (elements.btnTestLineNotify) {
-    elements.btnTestLineNotify.disabled = true;
-    elements.btnTestLineNotify.textContent = "送信中...";
+  const originalBtnText = targetBtn ? targetBtn.textContent : "";
+  if (targetBtn) {
+    targetBtn.disabled = true;
+    targetBtn.textContent = "送信中...";
   }
 
   try {
     const res = await fetch("/api/line/test", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, to })
+      body: JSON.stringify({ token, to, type })
     });
 
     const data = await res.json();
     if (data && data.success) {
-      logger.add("success", "LINEテスト通知を送信しました", { to: to });
-      alert("LINEにテスト通知を送信しました！\nLINEアプリ（グループトーク）に通知が届いているかご確認ください。");
-      // 設定も保存
+      logger.add("success", `LINEテスト通知を送信しました (${targetLabel})`, { to, type });
+      alert(`${targetLabel}にテスト通知を送信しました！\nLINEアプリ該当グループに通知が届いているかご確認ください。`);
+      // 設定も自動保存
       saveLineConfig(false);
     } else {
-      logger.add("warn", "LINEテスト送信エラー", data);
-      alert("LINE送信に失敗しました:\n" + (data.error || "エラーが発生しました") + "\n\n※トークンが正しいか、公式アカウントがグループに招待されているかご確認ください。");
+      logger.add("warn", `LINEテスト送信エラー (${targetLabel})`, data);
+      alert(`LINE送信に失敗しました:\n${data.error || "エラーが発生しました"}\n\n※トークンが正しいか、公式アカウントが該当グループに招待されているかご確認ください。`);
     }
   } catch (err) {
-    logger.add("error", "LINEテスト送信通信エラー: " + err.message);
+    logger.add("error", `LINEテスト送信通信エラー (${targetLabel}): ` + err.message);
     alert("通信エラーが発生しました: " + err.message);
   } finally {
-    if (elements.btnTestLineNotify) {
-      elements.btnTestLineNotify.disabled = false;
-      elements.btnTestLineNotify.textContent = "🔔 LINEテスト送信";
+    if (targetBtn) {
+      targetBtn.disabled = false;
+      targetBtn.textContent = originalBtnText;
     }
   }
 }
