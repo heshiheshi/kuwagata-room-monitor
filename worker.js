@@ -1,5 +1,5 @@
 /**
- * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.1
+ * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.2
  * 
  * 機能:
  * 1. SwitchBot Open API プロキシ (/api/switchbot)
@@ -7,7 +7,7 @@
  * 3. 温度履歴クラウド蓄積 API (/api/sync/history) - 30分間隔データ蓄積・CSV出力対応
  * 4. 無人定期実行ステータス API (/api/sync/status) - 24時間稼働確認
  * 5. LINE Messaging API 連携 (/api/line/config, /api/line/test, /api/line/webhook) - 定時/警告グループ分離対応
- * 6. 無人定期実行 Cron Triggers (scheduled) - 30分おき無人記録・定時サマリー＆緊急温度異常アラート個別配信
+ * 6. 無人定期実行 Cron Triggers (scheduled) - 30分おき無人記録・定時サマリー＆緊急アラート（先行排他ロックによる二重送信防止）
  */
 
 import { onRequestGet, onRequestPost, onRequestOptions, callSwitchBotApi, jsonResponse } from './functions/api/switchbot.js';
@@ -487,11 +487,12 @@ export default {
               const lastAlertTsRaw = await env.KUWAGATA_KV.get("status:line_alert_last_sent");
               const lastAlertTs = lastAlertTsRaw ? parseInt(lastAlertTsRaw, 10) : 0;
               if (!lastAlertTs || (now.getTime() - lastAlertTs) >= cooldownMs) {
+                // 【二重送信防止ロック】送信前に先行してタイムスタンプをKVへ記録し、並列実行やリトライによる重複を完全遮断
+                await env.KUWAGATA_KV.put("status:line_alert_last_sent", now.getTime().toString());
                 const outStr = outdoorCurrentTemp !== null ? `${outdoorCurrentTemp.toFixed(1)}℃` : "--";
                 const limitVal = abnormalType === "上限超過" ? alertMaxTemp : alertMinTemp;
                 const alertMsg = `🚨【室温異常】${abnormalMeter} ${abnormalVal.toFixed(1)}℃\n（設定${limitVal}℃ 超過 / 外気温 ${outStr}）\nhttps://kuwagata-room-monitor2.heshikoumai.workers.dev/`;
                 await sendLinePushMessage(lineToken, alertTo, alertMsg);
-                await env.KUWAGATA_KV.put("status:line_alert_last_sent", now.getTime().toString());
               }
             }
 
@@ -506,6 +507,9 @@ export default {
               const todayHourKey = `status:line_summary_${jst.getUTCFullYear()}${mm}${dd}_${hh}`;
               const alreadySent = await env.KUWAGATA_KV.get(todayHourKey);
               if (!alreadySent) {
+                // 【二重送信防止ロック】集計・送信処理前に直ちにキーを先行確保し、並列呼び出しによる重複を完全遮断
+                await env.KUWAGATA_KV.put(todayHourKey, "locked", { expirationTtl: 86400 });
+
                 // 直近12時間（12時間前以降）の履歴を抽出
                 const twelveHoursAgo = now.getTime() - (12 * 60 * 60 * 1000);
                 const recentRecords = history.filter(h => (h.ts || h.time || 0) >= twelveHoursAgo);
