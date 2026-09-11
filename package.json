@@ -8,6 +8,6 @@
     "start": "node dev-server.js",
     "build": "echo 'Build complete'",
     "dev": "npx wrangler dev",
-    "deploy": "npx wrangler deploy"
+    "deploy": "npx --yes wrangler@4.130.0 deploy"
   }
 }
