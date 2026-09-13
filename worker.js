@@ -1,5 +1,5 @@
 /**
- * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.2
+ * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.3
  * 
  * 機能:
  * 1. SwitchBot Open API プロキシ (/api/switchbot)
@@ -7,7 +7,7 @@
  * 3. 温度履歴クラウド蓄積 API (/api/sync/history) - 30分間隔データ蓄積・CSV出力対応
  * 4. 無人定期実行ステータス API (/api/sync/status) - 24時間稼働確認
  * 5. LINE Messaging API 連携 (/api/line/config, /api/line/test, /api/line/webhook) - 定時/警告グループ分離対応
- * 6. 無人定期実行 Cron Triggers (scheduled) - 30分おき無人記録・定時サマリー＆緊急アラート（先行排他ロックによる二重送信防止）
+ * 6. 無人定期実行 Cron Triggers (scheduled) - 30分おき無人記録・定時サマリー（最低最高独立改行フォーマット）＆緊急アラート
  */
 
 import { onRequestGet, onRequestPost, onRequestOptions, callSwitchBotApi, jsonResponse } from './functions/api/switchbot.js';
@@ -279,7 +279,7 @@ export default {
         if (testType === "alert") {
           testMsg = `🚨【室温異常テスト】棚1 (上段) 18.9℃\n（設定上限 18.5℃ 超過 / 外気温 32.1℃）\n※ このグループへ飼育室の温度異常アラートが即座に配信されます（通知オン推奨）。`;
         } else if (testType === "summary") {
-          testMsg = `🪲 飼育室 定時テスト (08:00)\n【室内平均】15.6℃\n（最低 14.8℃ 02:51 / 最高 16.1℃ 14:32）\n【外気温平均】26.4℃\n（最低 22.1℃ 04:15 / 最高 32.8℃ 13:40）\n※ このグループへ朝夕の定時レポートが配信されます（通知オフ推奨）。`;
+          testMsg = `🪲 飼育室 定時テスト (08:00)\n【室内平均】15.6℃\n最低 14.8℃ 02:51\n最高 16.1℃ 14:32\n【外気温平均】26.4℃\n最低 22.1℃ 04:15\n最高 32.8℃ 13:40\n※ このグループへ朝夕の定時レポートが配信されます（通知オフ推奨）。`;
         } else {
           testMsg = `🪲 クワガタ飼育室 LINE通知連携テスト\n───────────────\nLINE通知の疎通が正常に確認できました！\nこのグループへ自動通知が配信されます。`;
         }
@@ -553,7 +553,7 @@ export default {
                       if (t.temp > indoorMax.temp) indoorMax = t;
                     });
 
-                    let outdoorStr = "【外気温平均】--\n（最低 -- / 最高 --）";
+                    let outdoorStr = "【外気温平均】--\n最低 --\n最高 --";
                     if (outdoorTemps.length > 0) {
                       const outAvg = (outdoorTemps.reduce((acc, t) => acc + t.temp, 0) / outdoorTemps.length).toFixed(1);
                       let outMin = outdoorTemps[0];
@@ -562,10 +562,10 @@ export default {
                         if (t.temp < outMin.temp) outMin = t;
                         if (t.temp > outMax.temp) outMax = t;
                       });
-                      outdoorStr = `【外気温平均】${outAvg}℃\n（最低 ${outMin.temp.toFixed(1)}℃ ${outMin.time} / 最高 ${outMax.temp.toFixed(1)}℃ ${outMax.time}）`;
+                      outdoorStr = `【外気温平均】${outAvg}℃\n最低 ${outMin.temp.toFixed(1)}℃ ${outMin.time}\n最高 ${outMax.temp.toFixed(1)}℃ ${outMax.time}`;
                     }
 
-                    const reportMsg = `🪲 飼育室 定時 (${hh}:00)\n【室内平均】${indoorAvg}℃\n（最低 ${indoorMin.temp.toFixed(1)}℃ ${indoorMin.time} / 最高 ${indoorMax.temp.toFixed(1)}℃ ${indoorMax.time}）\n${outdoorStr}`;
+                    const reportMsg = `🪲 飼育室 定時 (${hh}:00)\n【室内平均】${indoorAvg}℃\n最低 ${indoorMin.temp.toFixed(1)}℃ ${indoorMin.time}\n最高 ${indoorMax.temp.toFixed(1)}℃ ${indoorMax.time}\n${outdoorStr}`;
                     await sendLinePushMessage(lineToken, summaryTo, reportMsg);
                     await env.KUWAGATA_KV.put(todayHourKey, "sent", { expirationTtl: 86400 });
                   }

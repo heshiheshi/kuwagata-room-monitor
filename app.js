@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.3.2
- * LINE公式アカウントMessaging API連携（定時/警告個別配信＆二重送信防止排他ロック対応）
+ * Kuwagata Room Monitor - Main Application Logic v3.3.3
+ * LINE公式アカウントMessaging API連携（定時サマリー改行レイアウト調整＆個別配信対応）
  */
 
-const APP_VERSION = "v3.3.2";
+const APP_VERSION = "v3.3.3";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
