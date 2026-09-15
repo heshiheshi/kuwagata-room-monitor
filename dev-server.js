@@ -1,14 +1,14 @@
 /**
- * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.3.3
+ * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.3.4
  * 外部npmパッケージ不要（Node.js標準機能のみで動作）
  * 
  * 機能:
  * - 静的ファイル配信 (index.html, app.js, style.css)
  * - SwitchBot Open API プロキシ (/api/switchbot)
  * - クラウド設定共有エミュレーション (/api/sync/config)
- * - 温度履歴蓄積エミュレーション (/api/sync/history) - 30分間隔対応
+ * - 温度履歴蓄積エミュレーション (/api/sync/history) - 30分間隔対応・補正PUT対応
  * - 24時間無人記録ステータス確認エミュレーション (/api/sync/status)
- * - LINE通知設定・テスト・Webhookエミュレーション (/api/line/*) - 定時（最低最高独立改行）/警告個別送信・排他ロック対応
+ * - LINE通知設定・テスト・Webhookエミュレーション (/api/line/*) - 定時/警告個別送信・排他ロック対応
  */
 
 import http from "node:http";
@@ -254,6 +254,26 @@ const server = http.createServer(async (req, res) => {
           res.end(JSON.stringify({ success: false, error: e.message }));
         }
       });
+    } else if (req.method === "PUT") {
+      let bodyStr = "";
+      req.on("data", chunk => bodyStr += chunk);
+      req.on("end", () => {
+        try {
+          const body = JSON.parse(bodyStr);
+          if (Array.isArray(body.history)) {
+            kv.tempHistory = body.history;
+            writeDevKv(kv);
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ success: true, count: kv.tempHistory.length }));
+            return;
+          }
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: "不正なデータ形式です" }));
+        } catch (e) {
+          res.writeHead(500, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ success: false, error: e.message }));
+        }
+      });
       return;
     }
   }
@@ -468,5 +488,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.3.3 running at http://localhost:${PORT}`);
+  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.3.4 running at http://localhost:${PORT}`);
 });

@@ -1,13 +1,13 @@
 /**
- * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.3
+ * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.4
  * 
  * 機能:
  * 1. SwitchBot Open API プロキシ (/api/switchbot)
  * 2. クラウド設定共有 API (/api/sync/config) - カード並び順・色・外気温設定をKVで全端末同期
- * 3. 温度履歴クラウド蓄積 API (/api/sync/history) - 30分間隔データ蓄積・CSV出力対応
+ * 3. 温度履歴クラウド蓄積 API (/api/sync/history) - 30分間隔データ蓄積・CSV出力・補正対応
  * 4. 無人定期実行ステータス API (/api/sync/status) - 24時間稼働確認
  * 5. LINE Messaging API 連携 (/api/line/config, /api/line/test, /api/line/webhook) - 定時/警告グループ分離対応
- * 6. 無人定期実行 Cron Triggers (scheduled) - 30分おき無人記録・定時サマリー（最低最高独立改行フォーマット）＆緊急アラート
+ * 6. 無人定期実行 Cron Triggers (scheduled) - 通信欠損ガード（0℃/0%誤警報防止）・上限超過/下限未満適正表記
  */
 
 import { onRequestGet, onRequestPost, onRequestOptions, callSwitchBotApi, jsonResponse } from './functions/api/switchbot.js';
@@ -58,7 +58,7 @@ export default {
         request,
         env,
         params: {},
-        waitUntil: ctx && ctx.waitUntil ? ctx.waitUntil.bind(ctx) : () => {}
+        data: {}
       };
 
       if (request.method === "GET") {
@@ -77,22 +77,27 @@ export default {
 
       if (request.method === "GET") {
         try {
-          const sharedRaw = await env.KUWAGATA_KV.get("config:shared");
-          const sharedConfig = sharedRaw ? JSON.parse(sharedRaw) : null;
-          return jsonResponse({ success: true, config: sharedConfig });
+          const configRaw = await env.KUWAGATA_KV.get("config:shared");
+          const config = configRaw ? JSON.parse(configRaw) : null;
+          return jsonResponse({ success: true, config: config });
         } catch (err) {
           return jsonResponse({ success: false, error: err.message }, 500);
         }
       } else if (request.method === "POST") {
         try {
           const body = await request.json();
-          const { config, credentials, devices } = body;
+          const { meterOrder, meterColors, outdoorMeterId, credentials, devices, chartMinTemp, chartMaxTemp } = body;
 
-          // 共有設定（並び順・色・外気設定・目盛り等）の保存
-          if (config) {
-            config.updatedAt = Date.now();
-            await env.KUWAGATA_KV.put("config:shared", JSON.stringify(config));
-          }
+          // 端末共通のカード並び順・色・外気温設定をKVに保存
+          const sharedConfig = {
+            meterOrder: meterOrder || [],
+            meterColors: meterColors || {},
+            outdoorMeterId: outdoorMeterId || "",
+            chartMinTemp: typeof chartMinTemp === "number" ? chartMinTemp : 14.0,
+            chartMaxTemp: typeof chartMaxTemp === "number" ? chartMaxTemp : 18.0,
+            updatedAt: Date.now()
+          };
+          await env.KUWAGATA_KV.put("config:shared", JSON.stringify(sharedConfig));
 
           // Cronバックグラウンド記録用（APIキーおよびデバイス情報）の保持
           if (credentials && credentials.token && credentials.secret) {
@@ -152,6 +157,17 @@ export default {
           }
 
           return jsonResponse({ success: true, count: history.length });
+        } catch (err) {
+          return jsonResponse({ success: false, error: err.message }, 500);
+        }
+      } else if (request.method === "PUT") {
+        try {
+          const body = await request.json();
+          if (Array.isArray(body.history)) {
+            await env.KUWAGATA_KV.put("history:temp_log", JSON.stringify(body.history));
+            return jsonResponse({ success: true, message: "履歴データを更新しました", count: body.history.length });
+          }
+          return jsonResponse({ success: false, error: "不正なデータ形式です" }, 400);
         } catch (err) {
           return jsonResponse({ success: false, error: err.message }, 500);
         }
@@ -401,6 +417,11 @@ export default {
       const min = String(jst.getUTCMinutes()).padStart(2, "0");
       const label = `${mm}/${dd} ${hh}:${min}`;
 
+      // 4. 既存履歴の読み込み（直近有効データの参照用）
+      const historyRaw = await env.KUWAGATA_KV.get("history:temp_log");
+      let history = historyRaw ? JSON.parse(historyRaw) : [];
+      const lastEntry = history.length > 0 ? history[history.length - 1] : null;
+
       const readings = {};
       let validCount = 0;
 
@@ -408,11 +429,28 @@ export default {
         if (res.status === "fulfilled" && res.value && res.value.body) {
           const body = res.value.body;
           if (body.temperature !== undefined) {
-            readings[meters[idx].deviceId] = {
-              temp: parseFloat(body.temperature),
-              humidity: body.humidity !== undefined ? parseInt(body.humidity, 10) : null
-            };
-            validCount++;
+            const rawTemp = parseFloat(body.temperature);
+            const rawHum = body.humidity !== undefined ? parseInt(body.humidity, 10) : null;
+
+            // 🛡️ センサー欠損・通信グリッチガード (0℃/0%や5℃未満等のダミー値を除外)
+            const isGlitch = (rawTemp === 0 && rawHum === 0) || isNaN(rawTemp) || rawTemp < 5.0 || rawTemp > 50.0;
+            if (!isGlitch) {
+              readings[meters[idx].deviceId] = {
+                temp: rawTemp,
+                humidity: rawHum
+              };
+              validCount++;
+            } else {
+              // 通信グリッチ時は、直前の有効データが存在すれば補完（グラフ急落防止）
+              const prev = lastEntry && lastEntry.readings ? lastEntry.readings[meters[idx].deviceId] : null;
+              if (prev && typeof prev.temp === "number" && prev.temp >= 5.0 && prev.temp <= 50.0) {
+                readings[meters[idx].deviceId] = {
+                  temp: prev.temp,
+                  humidity: prev.humidity
+                };
+                validCount++;
+              }
+            }
           }
         }
       });
@@ -427,9 +465,7 @@ export default {
         source: "cron_30m"
       };
 
-      // 4. 履歴に追加保存（最大1008件 = 30分おきで約3週間分）
-      const historyRaw = await env.KUWAGATA_KV.get("history:temp_log");
-      let history = historyRaw ? JSON.parse(historyRaw) : [];
+      // 履歴に追加保存（最大1008件 = 30分おきで約3週間分）
       history.push(newEntry);
       if (history.length > 1008) {
         history = history.slice(-1008);
@@ -468,6 +504,9 @@ export default {
             for (const [mId, r] of Object.entries(readings)) {
               if (mId === outdoorId) continue;
               if (typeof r.temp !== "number") continue;
+              // 🛡️ 防御: 5℃未満（通信途絶ダミー値）はアラート対象から完全除外
+              if (r.temp < 5.0 || (r.temp === 0 && r.humidity === 0)) continue;
+
               if (r.temp > alertMaxTemp) {
                 const dObj = meters.find(m => m.deviceId === mId);
                 abnormalMeter = dObj ? dObj.deviceName : "室内棚";
@@ -490,8 +529,9 @@ export default {
                 // 【二重送信防止ロック】送信前に先行してタイムスタンプをKVへ記録し、並列実行やリトライによる重複を完全遮断
                 await env.KUWAGATA_KV.put("status:line_alert_last_sent", now.getTime().toString());
                 const outStr = outdoorCurrentTemp !== null ? `${outdoorCurrentTemp.toFixed(1)}℃` : "--";
+                const typeLabel = abnormalType === "上限超過" ? "超過" : "未満";
                 const limitVal = abnormalType === "上限超過" ? alertMaxTemp : alertMinTemp;
-                const alertMsg = `🚨【室温異常】${abnormalMeter} ${abnormalVal.toFixed(1)}℃\n（設定${limitVal}℃ 超過 / 外気温 ${outStr}）\nhttps://kuwagata-room-monitor2.heshikoumai.workers.dev/`;
+                const alertMsg = `🚨【室温異常】${abnormalMeter} ${abnormalVal.toFixed(1)}℃\n（設定${limitVal}℃ ${typeLabel} / 外気温 ${outStr}）\nhttps://kuwagata-room-monitor2.heshikoumai.workers.dev/`;
                 await sendLinePushMessage(lineToken, alertTo, alertMsg);
               }
             }

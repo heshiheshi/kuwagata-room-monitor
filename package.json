@@ -1,6 +1,6 @@
 {
   "name": "kuwagata-room-monitor2",
-  "version": "3.3.3",
+  "version": "3.3.4",
   "description": "Kuwagata Room Monitor",
   "main": "worker.js",
   "type": "module",

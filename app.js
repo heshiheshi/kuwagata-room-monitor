@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.3.3
- * LINE公式アカウントMessaging API連携（定時サマリー改行レイアウト調整＆個別配信対応）
+ * Kuwagata Room Monitor - Main Application Logic v3.3.4
+ * 通信欠損ガード（0℃/0%グリッチ除外）・アラート上限下限適正化
  */
 
-const APP_VERSION = "v3.3.3";
+const APP_VERSION = "v3.3.4";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -2050,9 +2050,15 @@ function recordTempHistory(results, timestampDate) {
 
   results.forEach(r => {
     if (typeof r.status.temperature === "number") {
+      const t = r.status.temperature;
+      const h = typeof r.status.humidity === "number" ? r.status.humidity : null;
+      // 🛡️ センサー欠損・0℃/0%ダミー値の除外（通信瞬断時の誤記録防止）
+      if ((t === 0 && h === 0) || t < 5.0 || t > 50.0) {
+        return;
+      }
       record.readings[r.device.deviceId] = {
-        temp: r.status.temperature,
-        humidity: typeof r.status.humidity === "number" ? r.status.humidity : null,
+        temp: t,
+        humidity: h,
         name: r.device.deviceName
       };
     }
@@ -2667,8 +2673,9 @@ function renderThermometerCards(meterDataList, isFresh = true) {
 
   sortedList.forEach((item, index) => {
     const { device, status } = item;
-    const temp = status.temperature !== undefined ? status.temperature : "--";
-    const humidity = status.humidity !== undefined ? status.humidity : "--";
+    const isGlitch = (status.temperature === 0 && status.humidity === 0);
+    const temp = (status.temperature !== undefined && !isGlitch) ? status.temperature : "--";
+    const humidity = (status.humidity !== undefined && !isGlitch) ? status.humidity : "--";
     const battery = status.battery !== undefined ? `${status.battery}%` : "--";
 
     const isOutdoor = (device.deviceId === appState.outdoorMeterId);
