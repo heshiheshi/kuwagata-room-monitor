@@ -1,9 +1,9 @@
 /**
- * Kuwagata Room Monitor - Main Application Logic v3.3.4
- * 通信欠損ガード（0℃/0%グリッチ除外）・アラート上限下限適正化
+ * Kuwagata Room Monitor - Main Application Logic v3.3.5
+ * 外気温計（E9:D8:AF:0D:85:F9）アラート完全除外＆設定永続化保護
  */
 
-const APP_VERSION = "v3.3.4";
+const APP_VERSION = "v3.3.5";
 const APP_NAME = "Kuwagata Room Monitor";
 
 // 🔒 クワガタアプリ共通の有効な合言葉（パスコード）
@@ -305,7 +305,7 @@ let airconEvents = [];
 try { airconEvents = JSON.parse(localStorage.getItem(STORAGE_KEYS.AIRCON_EVENTS) || "[]"); } catch (e) {}
 
 let savedOutdoorMeterId = localStorage.getItem(STORAGE_KEYS.OUTDOOR_METER_ID);
-if (savedOutdoorMeterId === null) {
+if (!savedOutdoorMeterId || savedOutdoorMeterId === "none") {
   // デフォルトで作業場温湿時計（E9D8AF0D85F9）を外気温として初期設定
   savedOutdoorMeterId = "E9D8AF0D85F9";
 }
@@ -1127,7 +1127,7 @@ async function syncConfigToCloud(isManual = false) {
     config: {
       meterOrder: appState.meterOrder || [],
       meterColors: appState.meterColors || {},
-      outdoorMeterId: appState.outdoorMeterId || "",
+      outdoorMeterId: appState.outdoorMeterId || "E9D8AF0D85F9",
       chartMinTemp: appState.chartMinTemp,
       chartMaxTemp: appState.chartMaxTemp
     },
@@ -1206,12 +1206,8 @@ async function fetchSharedConfig(isManual = false) {
       }
 
       if (cfg.outdoorMeterId !== undefined) {
-        appState.outdoorMeterId = cfg.outdoorMeterId;
-        if (cfg.outdoorMeterId) {
-          localStorage.setItem(STORAGE_KEYS.OUTDOOR_METER_ID, cfg.outdoorMeterId);
-        } else {
-          localStorage.removeItem(STORAGE_KEYS.OUTDOOR_METER_ID);
-        }
+        appState.outdoorMeterId = cfg.outdoorMeterId || "E9D8AF0D85F9";
+        localStorage.setItem(STORAGE_KEYS.OUTDOOR_METER_ID, appState.outdoorMeterId);
         changed = true;
       }
 

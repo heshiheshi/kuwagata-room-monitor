@@ -1,5 +1,5 @@
 /**
- * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.3.4
+ * Kuwagata Room Monitor - ゼロ依存ローカル開発サーバー v3.3.5
  * 外部npmパッケージ不要（Node.js標準機能のみで動作）
  * 
  * 機能:
@@ -8,7 +8,7 @@
  * - クラウド設定共有エミュレーション (/api/sync/config)
  * - 温度履歴蓄積エミュレーション (/api/sync/history) - 30分間隔対応・補正PUT対応
  * - 24時間無人記録ステータス確認エミュレーション (/api/sync/status)
- * - LINE通知設定・テスト・Webhookエミュレーション (/api/line/*) - 定時/警告個別送信・排他ロック対応
+ * - LINE通知設定・テスト・Webhookエミュレーション (/api/line/*) - 定時/警告個別送信・外気温除外
  */
 
 import http from "node:http";
@@ -488,5 +488,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.3.4 running at http://localhost:${PORT}`);
+  console.log(`🚀 Kuwagata Room Monitor Dev Server v3.3.5 running at http://localhost:${PORT}`);
 });

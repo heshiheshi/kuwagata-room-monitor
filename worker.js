@@ -1,5 +1,5 @@
 /**
- * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.4
+ * Kuwagata Room Monitor - Cloudflare Workers Entrypoint v3.3.5
  * 
  * 機能:
  * 1. SwitchBot Open API プロキシ (/api/switchbot)
@@ -7,7 +7,7 @@
  * 3. 温度履歴クラウド蓄積 API (/api/sync/history) - 30分間隔データ蓄積・CSV出力・補正対応
  * 4. 無人定期実行ステータス API (/api/sync/status) - 24時間稼働確認
  * 5. LINE Messaging API 連携 (/api/line/config, /api/line/test, /api/line/webhook) - 定時/警告グループ分離対応
- * 6. 無人定期実行 Cron Triggers (scheduled) - 通信欠損ガード（0℃/0%誤警報防止）・上限超過/下限未満適正表記
+ * 6. 無人定期実行 Cron Triggers (scheduled) - 外気温計（E9:D8:AF:0D:85:F9等）の警報完全除外ガード
  */
 
 import { onRequestGet, onRequestPost, onRequestOptions, callSwitchBotApi, jsonResponse } from './functions/api/switchbot.js';
@@ -37,6 +37,22 @@ async function sendLinePushMessage(token, to, text) {
   } catch (e) {
     return { success: false, error: e.message };
   }
+}
+
+/**
+ * ☀️ 外気温計デバイスの確実な判定ヘルパー
+ * - 設定されたIDと一致する場合
+ * - ユーザー指定の外気温計BLE MAC (E9:D8:AF:0D:85:F9 / E9D8AF0D85F9)
+ * - デバイス名に「外気」「屋外」「外」「ベランダ」が含まれる場合
+ */
+function isOutdoorDevice(deviceId, deviceName, configuredOutdoorId) {
+  const clean = String(deviceId || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+  const cleanConfigured = String(configuredOutdoorId || "").replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
+  if (cleanConfigured && clean === cleanConfigured) return true;
+  if (clean === "E9D8AF0D85F9") return true;
+  const name = String(deviceName || "");
+  if (name.includes("外気") || name.includes("屋外") || name.includes("ベランダ") || name.includes("外")) return true;
+  return false;
 }
 
 export default {
@@ -86,20 +102,22 @@ export default {
       } else if (request.method === "POST") {
         try {
           const body = await request.json();
-          const { meterOrder, meterColors, outdoorMeterId, credentials, devices, chartMinTemp, chartMaxTemp } = body;
+          const cfg = body.config || body;
+          const credentials = body.credentials || cfg.credentials;
+          const devices = body.devices || cfg.devices;
 
           // 端末共通のカード並び順・色・外気温設定をKVに保存
           const sharedConfig = {
-            meterOrder: meterOrder || [],
-            meterColors: meterColors || {},
-            outdoorMeterId: outdoorMeterId || "",
-            chartMinTemp: typeof chartMinTemp === "number" ? chartMinTemp : 14.0,
-            chartMaxTemp: typeof chartMaxTemp === "number" ? chartMaxTemp : 18.0,
+            meterOrder: cfg.meterOrder || [],
+            meterColors: cfg.meterColors || {},
+            outdoorMeterId: cfg.outdoorMeterId || "E9D8AF0D85F9",
+            chartMinTemp: typeof cfg.chartMinTemp === "number" ? cfg.chartMinTemp : 14.0,
+            chartMaxTemp: typeof cfg.chartMaxTemp === "number" ? cfg.chartMaxTemp : 18.0,
             updatedAt: Date.now()
           };
           await env.KUWAGATA_KV.put("config:shared", JSON.stringify(sharedConfig));
 
-          // Cronバックグラウンド記録用（APIキーおよびデバイス情報）の保持
+          // 24時間無人監視用（SwitchBot認証情報と温湿度計リスト）
           if (credentials && credentials.token && credentials.secret) {
             const botConfig = {
               token: credentials.token,
@@ -110,7 +128,7 @@ export default {
             await env.KUWAGATA_KV.put("config:switchbot", JSON.stringify(botConfig));
           }
 
-          return jsonResponse({ success: true, message: "設定をクラウドに保存しました" });
+          return jsonResponse({ success: true, message: "設定をクラウドに保存しました", config: sharedConfig });
         } catch (err) {
           return jsonResponse({ success: false, error: err.message }, 500);
         }
@@ -497,24 +515,33 @@ export default {
             let abnormalVal = 0;
 
             let outdoorCurrentTemp = null;
-            if (outdoorId && readings[outdoorId] && typeof readings[outdoorId].temp === "number") {
-              outdoorCurrentTemp = readings[outdoorId].temp;
+            for (const [mId, r] of Object.entries(readings)) {
+              const dObj = meters.find(m => m.deviceId === mId);
+              const dName = dObj ? dObj.deviceName : "";
+              if (isOutdoorDevice(mId, dName, outdoorId)) {
+                if (typeof r.temp === "number") {
+                  outdoorCurrentTemp = r.temp;
+                  break;
+                }
+              }
             }
 
             for (const [mId, r] of Object.entries(readings)) {
-              if (mId === outdoorId) continue;
+              const dObj = meters.find(m => m.deviceId === mId);
+              const dName = dObj ? dObj.deviceName : "";
+
+              // ☀️ 外気温計（E9:D8:AF:0D:85:F9等）はアラート対象から完全に除外
+              if (isOutdoorDevice(mId, dName, outdoorId)) continue;
               if (typeof r.temp !== "number") continue;
               // 🛡️ 防御: 5℃未満（通信途絶ダミー値）はアラート対象から完全除外
               if (r.temp < 5.0 || (r.temp === 0 && r.humidity === 0)) continue;
 
               if (r.temp > alertMaxTemp) {
-                const dObj = meters.find(m => m.deviceId === mId);
                 abnormalMeter = dObj ? dObj.deviceName : "室内棚";
                 abnormalType = "上限超過";
                 abnormalVal = r.temp;
                 break;
               } else if (r.temp < alertMinTemp) {
-                const dObj = meters.find(m => m.deviceId === mId);
                 abnormalMeter = dObj ? dObj.deviceName : "室内棚";
                 abnormalType = "下限未満";
                 abnormalVal = r.temp;
@@ -567,7 +594,9 @@ export default {
                       let recIndoorSum = 0;
                       let recIndoorCount = 0;
                       for (const [devId, val] of Object.entries(rec.readings)) {
-                        if (devId === outdoorId) {
+                        const dObj = meters.find(m => m.deviceId === devId);
+                        const dName = dObj ? dObj.deviceName : "";
+                        if (isOutdoorDevice(devId, dName, outdoorId)) {
                           if (typeof val.temp === "number") {
                             outdoorTemps.push({ temp: val.temp, time: recTimeStr });
                           }
